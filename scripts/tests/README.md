@@ -1,0 +1,1 @@
+Protocol regression tests under this directory are intentionally dependency-light and validate the request/response contract used by the native ML daemon.

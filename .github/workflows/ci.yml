@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Dependency security audit
+        run: npm audit --audit-level=high
+
+      - name: Telegram security invariants
+        run: node scripts/tests/telegram-security-invariants.mjs
+
+      - name: Analysis live-only invariants
+        run: node scripts/tests/analysis-live-only-invariants.mjs
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Server-authoritative horizon invariant
+        run: node scripts/tests/server-authoritative-horizon-invariant.mjs
+
+      - name: Prediction/trading horizon lineage invariant
+        run: node scripts/tests/prediction-trading-integration-invariants.mjs
+
+      - name: Cross-module integration governance invariant
+        run: node scripts/tests/cross-module-integration-invariants.mjs
+
+      - name: Production build
+        run: npm run build

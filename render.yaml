@@ -1,0 +1,97 @@
+services:
+  - type: web
+    name: deriv-ai-trading-hub
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: frankfurt
+    plan: starter
+    healthCheckPath: /api/ml/status
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: NODE_ENV
+        value: "production"
+      - key: ML_TRAINING_CONCURRENCY
+        value: "1"
+      - key: DATASET_BUILD_POLL_INTERVAL_MS
+        value: "2000"
+      - key: DATASET_BUILD_MAX_ASSETS
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: ADMIN_SECRET_KEY
+        sync: false
+      - key: NEXT_PUBLIC_DERIV_APP_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+      - key: TELEGRAM_AUTH_SECRET
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+
+  - type: worker
+    name: deriv-ai-ml-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: npm run ml:worker
+    region: frankfurt
+    plan: starter
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: NODE_ENV
+        value: "production"
+      - key: ML_TRAINING_CONCURRENCY
+        value: "1"
+      - key: ML_WORKER_POLL_INTERVAL_MS
+        value: "2000"
+      - key: ML_WORKER_HEARTBEAT_INTERVAL_MS
+        value: "5000"
+      - key: ML_WORKER_LEASE_TIMEOUT_MS
+        value: "90000"
+      - key: ML_TRAINING_TIMEOUT_MS
+        value: "1800000"
+      - key: ML_TRAINING_STALE_AFTER_MS
+        value: "120000"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: MKL_NUM_THREADS
+        value: "1"
+      - key: NUMEXPR_NUM_THREADS
+        value: "1"
+      - key: TORCH_NUM_THREADS
+        value: "1"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: deriv-ai-trading-hub
+          envVarKey: DATABASE_URL
+
+  - type: worker
+    name: deriv-ai-dataset-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: npm run dataset:worker
+    region: frankfurt
+    plan: starter
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: NODE_ENV
+        value: "production"
+      - key: DATASET_WORKER_POLL_INTERVAL_MS
+        value: "2000"
+      - key: DATASET_WORKER_STALE_AFTER_MINUTES
+        value: "10"
+      - key: DATASET_WORKER_HEARTBEAT_MS
+        value: "30000"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: deriv-ai-trading-hub
+          envVarKey: DATABASE_URL

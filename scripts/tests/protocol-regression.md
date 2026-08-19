@@ -1,0 +1,1 @@
+Native ML daemon requests must echo the Node request id on every successful terminal response. Progress events may carry the same id, but the final result must include it so the Node pending request can resolve and persist terminal training state.

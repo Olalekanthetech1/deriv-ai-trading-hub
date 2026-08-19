@@ -1,0 +1,8 @@
+{
+  "name": "Deriv Rise Fall Trading App",
+  "description": "Next-generation Deriv Rise/Fall algorithmic trading platform with machine learning signals, strategy management, and real-time market insights.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
