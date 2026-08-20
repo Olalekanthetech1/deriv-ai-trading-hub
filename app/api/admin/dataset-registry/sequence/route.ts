@@ -5,6 +5,7 @@ import { listCanonicalMlDatasetsWithCompatibility } from '@/lib/ml-dataset-regis
 import { loadUnifiedSequenceDataset } from '@/lib/ml-unified-sequence-adapter';
 import { enqueueSequenceTrainingJob, listSequenceTrainingQueueJobs } from '@/lib/ml-sequence-training-queue';
 import { parseSequenceTrainingDatasetRef } from '@/lib/ml-sequence-training-contract';
+import { trainUnifiedSequenceModels } from '@/lib/ml-unified-sequence-training-orchestrator';
 
 export const dynamic = 'force-dynamic';
 
@@ -99,6 +100,7 @@ export async function POST(req: NextRequest) {
     const horizonKey = typeof body?.horizonKey === 'string' ? body.horizonKey.trim().toLowerCase() : '';
     const sourceType = body?.sourceType === 'unified' || body?.sourceType === 'duration' ? body.sourceType : null;
     const requestedModels = normalizeModelTypes(body?.modelTypes);
+    const autoPromote = body?.autoPromote !== false;
 
     if (!datasetId || !horizonKey || !sourceType) {
       return NextResponse.json({ success: false, error: 'datasetId, horizonKey, and sourceType are required.' }, { status: 400, headers: noStore() });
@@ -126,6 +128,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       queued: true,
+      autoPromote,
       dataSource: sourceType === 'unified' ? 'validated-unified-sequence-adapter' : 'canonical-duration-dataset',
       workerBoundary: 'dedicated-ml-worker',
       ...job,

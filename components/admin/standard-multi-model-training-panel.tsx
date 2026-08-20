@@ -28,7 +28,17 @@ import {
 } from 'lucide-react';
 import { adminFetch } from '@/lib/admin-client-auth';
 
-export type MlModelKey = 'xgboost' | 'lightgbm' | 'catboost' | 'tcn' | 'lstm' | 'hmm' | 'isolation_forest';
+export type MlModelKey = 'lstm' | 'tcn' | 'transformer' | 'hmm' | 'isolation_forest';
+
+export const CANONICAL_DEEP_SPECIALIZED_MODELS: MlModelKey[] = ['lstm', 'tcn', 'transformer', 'hmm', 'isolation_forest'];
+
+export const MODEL_METADATA_CONFIG: Record<MlModelKey, { label: string; badge: string; desc: string; category: 'sequential' | 'regime' | 'anomaly' }> = {
+  lstm: { label: 'LSTM / GRU', badge: 'Sequential 3D', desc: 'Recurrent memory gates capturing tick momentum & persistence', category: 'sequential' },
+  tcn: { label: 'TCN', badge: 'Temporal Conv', desc: 'Dilated causal convolutions for multi-scale sequence dynamics', category: 'sequential' },
+  transformer: { label: 'Transformer', badge: 'Attention Seq', desc: 'Multi-head self-attention resolving inter-tick dependencies', category: 'sequential' },
+  hmm: { label: 'HMM Regime', badge: 'Latent Markov', desc: 'Hidden Markov classification of volatility regimes', category: 'regime' },
+  isolation_forest: { label: 'Isolation Forest', badge: 'Anomaly Gate', desc: 'Unsupervised micro-anomaly & outlier gate', category: 'anomaly' },
+};
 
 interface ArchitectureEligibility {
   compatible: boolean;
@@ -136,8 +146,9 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
   const [trainingMode, setTrainingMode] = useState<'single' | 'batch'>('single');
   const [availableAssets, setAvailableAssets] = useState<any[]>([]);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
-  const [availableModelTypes, setAvailableModelTypes] = useState<MlModelKey[]>([]);
-  const [selectedModelTypes, setSelectedModelTypes] = useState<MlModelKey[]>([]);
+  const [availableModelTypes, setAvailableModelTypes] = useState<MlModelKey[]>(CANONICAL_DEEP_SPECIALIZED_MODELS);
+  const [selectedModelTypes, setSelectedModelTypes] = useState<MlModelKey[]>(CANONICAL_DEEP_SPECIALIZED_MODELS);
+  const [autoPromote, setAutoPromote] = useState(true);
   const [training, setTraining] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -255,9 +266,13 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
       if (runsData?.success) {
         if (Array.isArray(runsData?.runs)) setRecentRuns(runsData.runs);
         if (Array.isArray(runsData?.modelTypes)) {
-          setAvailableModelTypes(runsData.modelTypes);
+          const validTypes = (runsData.modelTypes as string[]).filter((m): m is MlModelKey =>
+            CANONICAL_DEEP_SPECIALIZED_MODELS.includes(m as MlModelKey),
+          );
+          const fleet = validTypes.length ? validTypes : CANONICAL_DEEP_SPECIALIZED_MODELS;
+          setAvailableModelTypes(fleet);
           if (selectedModelTypes.length === 0) {
-            setSelectedModelTypes(runsData.modelTypes);
+            setSelectedModelTypes(fleet);
           }
         }
         if (Array.isArray(runsData?.queue)) {
@@ -276,27 +291,22 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
   }, []);
 
   // Determine active required architecture based on selected model types
-  const hasSequenceModelsSelected = selectedModelTypes.some((m) => m === 'tcn' || m === 'lstm');
-  const hasTabularModelsSelected = selectedModelTypes.some((m) => m === 'xgboost' || m === 'lightgbm' || m === 'catboost');
+  const hasSequenceModelsSelected = selectedModelTypes.some((m) => m === 'tcn' || m === 'lstm' || m === 'transformer');
   const hasRegimeAnomalySelected = selectedModelTypes.some((m) => m === 'hmm' || m === 'isolation_forest');
 
   // Filter datasets compatible with the current model selection
   const compatibleDatasets = allDatasets.filter((d) => {
     if (!d.compatibility) return true;
-    if (hasSequenceModelsSelected && !hasTabularModelsSelected && !hasRegimeAnomalySelected) {
+    if (hasSequenceModelsSelected && !hasRegimeAnomalySelected) {
       return d.compatibility.architectures.sequential.compatible;
     }
-    if (hasTabularModelsSelected && !hasSequenceModelsSelected && !hasRegimeAnomalySelected) {
-      return d.compatibility.architectures.tabular.compatible;
-    }
-    if (hasRegimeAnomalySelected && !hasSequenceModelsSelected && !hasTabularModelsSelected) {
+    if (hasRegimeAnomalySelected && !hasSequenceModelsSelected) {
       return d.compatibility.architectures.regime.compatible || d.compatibility.architectures.anomaly.compatible;
     }
-    // Mixed selection: check if dataset satisfies all selected model families
+    // Mixed selection: check if dataset satisfies both sequential and regime/anomaly requirements
     let ok = true;
     if (hasSequenceModelsSelected && !d.compatibility.architectures.sequential.compatible) ok = false;
-    if (hasTabularModelsSelected && !d.compatibility.architectures.tabular.compatible) ok = false;
-    if (hasRegimeAnomalySelected && !d.compatibility.architectures.regime.compatible) ok = false;
+    if (hasRegimeAnomalySelected && !d.compatibility.architectures.regime.compatible && !d.compatibility.architectures.anomaly.compatible) ok = false;
     return ok;
   });
 
@@ -347,15 +357,15 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
         setBatchProgress({ current: i + 1, total: selectedDatasetIds.length });
 
         if (dataset.source_type === 'unified_multi_horizon') {
-          const sequenceModels = selectedModelTypes.filter((model) => model === 'tcn' || model === 'lstm');
+          const sequenceModels = selectedModelTypes.filter((model) => model === 'tcn' || model === 'lstm' || model === 'transformer');
           if (sequenceModels.length === 0) {
             allErrors.push(
-              `${dataset.asset_symbol} @ ${dataset.duration_value}${dataset.duration_unit}: No sequential models selected. Unified Multi-Horizon datasets train on sequential architectures (TCN / LSTM).`,
+              `${dataset.asset_symbol} @ ${dataset.duration_value}${dataset.duration_unit}: No sequential models selected. Unified Multi-Horizon datasets train on sequential architectures (LSTM / TCN / Transformer).`,
             );
             continue;
           }
 
-          const nonSequenceModels = selectedModelTypes.filter((model) => model !== 'tcn' && model !== 'lstm');
+          const nonSequenceModels = selectedModelTypes.filter((model) => model !== 'tcn' && model !== 'lstm' && model !== 'transformer');
           if (nonSequenceModels.length > 0) {
             allSkipped.push(
               `${dataset.asset_symbol} @ ${dataset.duration_value}${dataset.duration_unit}: ${nonSequenceModels.join(', ')} (non-sequential models skipped; queued ${sequenceModels.join(', ').toUpperCase()})`,
@@ -370,6 +380,7 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
               horizonKey: dataset.horizon_key,
               sourceType: 'unified',
               modelTypes: sequenceModels,
+              autoPromote,
             }),
           });
           const data = await safeParseJson(res, '/api/admin/dataset-registry/sequence');
@@ -390,6 +401,7 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
             datasetId: dataset.source_dataset_id || dataset.id,
             modelTypes: selectedModelTypes,
             retryFailed: false,
+            autoPromote,
           }),
         });
 
@@ -432,12 +444,12 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
       <div className="rounded-3xl border border-blue-500/20 bg-blue-950/10 p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <div className="flex items-center gap-2 text-blue-400 font-bold text-sm">
+            <div className="flex items-center gap-2 text-cyan-400 font-bold text-sm">
               <Layers className="h-4 w-4" />
-              Standard Multi-Model Dedicated Training
+              Deep Sequence & Specialized Models Training
             </div>
             <p className="mt-1 text-xs text-slate-400 max-w-3xl">
-              Authoritative dataset compatibility is resolved live by the canonical registry across Tabular, Sequential, Regime, Anomaly, and Multi-Horizon paradigms.
+              Dedicated engine for Sequential Neural Networks (LSTM, TCN, Transformer), Latent Volatility Markov Regimes (HMM), and Unsupervised Outlier Gates (Isolation Forest).
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -798,33 +810,19 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Architectures to Queue
+                  Specialized Architectures to Queue
                 </label>
-                <div className="flex flex-wrap items-center gap-2 text-[10px] font-medium text-blue-400">
+                <div className="flex flex-wrap items-center gap-2 text-[10px] font-medium text-cyan-400">
                   <button
                     type="button"
                     onClick={() =>
                       setSelectedModelTypes(
-                        availableModelTypes.filter((m) => m === 'lstm' || m === 'tcn'),
+                        availableModelTypes.filter((m) => m === 'lstm' || m === 'tcn' || m === 'transformer'),
                       )
                     }
                     className="hover:underline text-cyan-300 font-semibold"
                   >
-                    Sequential (TCN/LSTM)
-                  </button>
-                  <span className="text-white/20">|</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedModelTypes(
-                        availableModelTypes.filter(
-                          (m) => m === 'xgboost' || m === 'lightgbm' || m === 'catboost',
-                        ),
-                      )
-                    }
-                    className="hover:underline"
-                  >
-                    Tabular
+                    Sequential (LSTM/TCN/Transformer)
                   </button>
                   <span className="text-white/20">|</span>
                   <button
@@ -836,23 +834,28 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
                     }
                     className="hover:underline text-amber-300 font-semibold"
                   >
-                    Regime & Anomaly (HMM/IsoForest)
+                    Regime & Anomaly
                   </button>
                   <span className="text-white/20">|</span>
-                  <button type="button" onClick={() => setSelectedModelTypes(availableModelTypes)} className="hover:underline">
+                  <button type="button" onClick={() => setSelectedModelTypes(availableModelTypes)} className="hover:underline text-slate-300">
                     All
                   </button>
                   <span className="text-white/20">|</span>
-                  <button type="button" onClick={() => setSelectedModelTypes([])} className="hover:underline">
+                  <button type="button" onClick={() => setSelectedModelTypes([])} className="hover:underline text-slate-400">
                     None
                   </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {availableModelTypes.map((key) => {
                   const sel = selectedModelTypes.includes(key);
-                  const isSeq = key === 'lstm' || key === 'tcn';
+                  const meta = MODEL_METADATA_CONFIG[key] || {
+                    label: key.toUpperCase(),
+                    paradigm: 'Specialized',
+                    description: 'Machine Learning Algorithm',
+                    color: 'text-slate-300',
+                  };
                   return (
                     <button
                       key={key}
@@ -861,16 +864,21 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
                       disabled={training}
                       className={`flex flex-col items-start justify-center p-3 rounded-2xl border transition cursor-pointer text-left ${
                         sel
-                          ? 'border-blue-400 bg-blue-400/10 text-blue-200'
+                          ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-200'
                           : 'border-white/10 bg-black/20 text-slate-400 hover:border-white/20'
                       }`}
                     >
                       <div className="flex items-center justify-between w-full">
-                        <span className="font-bold text-xs uppercase">{key.replace('_', ' ')}</span>
-                        {sel && <Check className="h-3 w-3 text-blue-400" />}
+                        <span className={`font-bold text-xs ${sel ? (meta.category === 'regime' ? 'text-amber-300' : meta.category === 'anomaly' ? 'text-purple-300' : 'text-cyan-300') : 'text-slate-300'}`}>
+                          {meta.label}
+                        </span>
+                        {sel && <Check className="h-3.5 w-3.5 text-cyan-400" />}
                       </div>
-                      <span className="text-[9px] text-slate-400 mt-1">
-                        {isSeq ? 'Sequential 3D' : key === 'hmm' ? 'Regime Markov' : key === 'isolation_forest' ? 'Anomaly' : 'Tabular GBDT'}
+                      <span className="text-[10px] font-semibold text-slate-400 mt-0.5">
+                        {meta.badge}
+                      </span>
+                      <span className="text-[9px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">
+                        {meta.desc}
                       </span>
                     </button>
                   );
@@ -878,11 +886,33 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
               </div>
             </div>
 
+            {/* Auto-Promote Toggle */}
+            <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-3.5">
+              <label className="flex items-center justify-between cursor-pointer gap-3">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+                    <Award className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Auto-Promote Validated Champions</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    Evaluates out-of-sample walk-forward gates and atomically promotes champions upon passing.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={autoPromote}
+                  onChange={(e) => setAutoPromote(e.target.checked)}
+                  disabled={training}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-emerald-500/40 cursor-pointer accent-emerald-500"
+                />
+              </label>
+            </div>
+
             {/* Execute Button */}
             <button
               onClick={() => void handleTrain()}
               disabled={training || selectedDatasetIds.length === 0 || selectedModelTypes.length === 0 || compatibleDatasets.length === 0}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-blue-500 px-4 py-3 text-sm font-bold text-white hover:bg-blue-400 disabled:opacity-50 transition cursor-pointer"
+              className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-cyan-600 px-4 py-3 text-sm font-bold text-white hover:bg-cyan-500 disabled:opacity-50 transition cursor-pointer shadow-lg shadow-cyan-600/20"
             >
               {training ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               {training

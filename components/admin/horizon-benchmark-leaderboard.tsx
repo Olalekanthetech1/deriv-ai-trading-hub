@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
+import Link from 'next/link';
 import {
   Layers,
   Sparkles,
@@ -14,6 +15,8 @@ import {
   ArrowRight,
   ShieldCheck,
   Zap,
+  Activity,
+  AlertCircle,
 } from 'lucide-react';
 
 interface HorizonBenchmarkRow {
@@ -29,7 +32,8 @@ interface HorizonBenchmarkRow {
   legacyWinRate: number | null;
   legacyLogLoss: number | null;
   sampleCount: number;
-  status: 'active' | 'optimal' | 'evaluating';
+  status: 'production' | 'staging' | 'retired' | 'candidate';
+  isUnified: boolean;
 }
 
 interface HorizonBenchmarkLeaderboardProps {
@@ -39,160 +43,21 @@ interface HorizonBenchmarkLeaderboardProps {
   onRetireLegacy?: (symbol: string) => void;
 }
 
-const DEFAULT_BENCHMARK_DATA: Record<string, HorizonBenchmarkRow[]> = {
-  R_100: [
-    {
-      horizonKey: '1t',
-      label: '1 Tick',
-      unit: 't',
-      value: 1,
-      seconds: 1,
-      unifiedAccuracy: 74.8,
-      unifiedWinRate: 72.4,
-      unifiedLogLoss: 0.512,
-      legacyAccuracy: 71.9,
-      legacyWinRate: 69.8,
-      legacyLogLoss: 0.568,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '2t',
-      label: '2 Ticks',
-      unit: 't',
-      value: 2,
-      seconds: 2,
-      unifiedAccuracy: 75.3,
-      unifiedWinRate: 73.1,
-      unifiedLogLoss: 0.498,
-      legacyAccuracy: 72.4,
-      legacyWinRate: 70.2,
-      legacyLogLoss: 0.551,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '3t',
-      label: '3 Ticks',
-      unit: 't',
-      value: 3,
-      seconds: 3,
-      unifiedAccuracy: 75.9,
-      unifiedWinRate: 73.8,
-      unifiedLogLoss: 0.485,
-      legacyAccuracy: 73.1,
-      legacyWinRate: 70.9,
-      legacyLogLoss: 0.540,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '5t',
-      label: '5 Ticks',
-      unit: 't',
-      value: 5,
-      seconds: 5,
-      unifiedAccuracy: 76.6,
-      unifiedWinRate: 74.5,
-      unifiedLogLoss: 0.472,
-      legacyAccuracy: 73.8,
-      legacyWinRate: 71.5,
-      legacyLogLoss: 0.528,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '10t',
-      label: '10 Ticks',
-      unit: 't',
-      value: 10,
-      seconds: 10,
-      unifiedAccuracy: 77.2,
-      unifiedWinRate: 75.0,
-      unifiedLogLoss: 0.461,
-      legacyAccuracy: 74.2,
-      legacyWinRate: 72.0,
-      legacyLogLoss: 0.519,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '15s',
-      label: '15 Seconds',
-      unit: 's',
-      value: 15,
-      seconds: 15,
-      unifiedAccuracy: 76.8,
-      unifiedWinRate: 74.2,
-      unifiedLogLoss: 0.469,
-      legacyAccuracy: 73.5,
-      legacyWinRate: 71.1,
-      legacyLogLoss: 0.534,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '30s',
-      label: '30 Seconds',
-      unit: 's',
-      value: 30,
-      seconds: 30,
-      unifiedAccuracy: 77.5,
-      unifiedWinRate: 75.2,
-      unifiedLogLoss: 0.455,
-      legacyAccuracy: 74.6,
-      legacyWinRate: 72.3,
-      legacyLogLoss: 0.510,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '60s',
-      label: '60 Seconds',
-      unit: 's',
-      value: 60,
-      seconds: 60,
-      unifiedAccuracy: 78.4,
-      unifiedWinRate: 76.1,
-      unifiedLogLoss: 0.441,
-      legacyAccuracy: 75.3,
-      legacyWinRate: 73.0,
-      legacyLogLoss: 0.495,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '120s',
-      label: '2 Minutes',
-      unit: 's',
-      value: 120,
-      seconds: 120,
-      unifiedAccuracy: 78.9,
-      unifiedWinRate: 76.7,
-      unifiedLogLoss: 0.432,
-      legacyAccuracy: 75.8,
-      legacyWinRate: 73.5,
-      legacyLogLoss: 0.488,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-    {
-      horizonKey: '300s',
-      label: '5 Minutes',
-      unit: 's',
-      value: 300,
-      seconds: 300,
-      unifiedAccuracy: 79.6,
-      unifiedWinRate: 77.4,
-      unifiedLogLoss: 0.420,
-      legacyAccuracy: 76.4,
-      legacyWinRate: 74.2,
-      legacyLogLoss: 0.479,
-      sampleCount: 14200,
-      status: 'optimal',
-    },
-  ],
-};
+function parseHorizonLabel(key: string): { label: string; unit: string; value: number; seconds: number } {
+  const match = /^(\d+)(t|tick|ticks|s|sec|secs|m|min|mins)$/i.exec(key);
+  if (!match) {
+    return { label: key, unit: 's', value: parseInt(key, 10) || 1, seconds: parseInt(key, 10) || 1 };
+  }
+  const val = parseInt(match[1], 10);
+  const u = match[2].toLowerCase();
+  if (u.startsWith('t')) {
+    return { label: `${val} ${val === 1 ? 'Tick' : 'Ticks'}`, unit: 't', value: val, seconds: val };
+  }
+  if (u.startsWith('m')) {
+    return { label: `${val} ${val === 1 ? 'Minute' : 'Minutes'}`, unit: 'm', value: val, seconds: val * 60 };
+  }
+  return { label: `${val} ${val === 1 ? 'Second' : 'Seconds'}`, unit: 's', value: val, seconds: val };
+}
 
 export function HorizonBenchmarkLeaderboard({
   symbol = 'R_100',
@@ -201,36 +66,243 @@ export function HorizonBenchmarkLeaderboard({
   const [selectedHorizon, setSelectedHorizon] = useState<string>('all');
   const [metricMode, setMetricMode] = useState<'accuracy' | 'winrate' | 'loss'>('accuracy');
 
-  // Derive dynamic benchmarks or fallback to calibrated baseline
-  const benchmarkRows = useMemo(() => {
-    const raw = DEFAULT_BENCHMARK_DATA[symbol] || DEFAULT_BENCHMARK_DATA['R_100'];
-    return raw;
-  }, [symbol]);
+  // Filter models for the current symbol (or all models if symbol is 'ALL')
+  const symbolModels = useMemo(() => {
+    if (!Array.isArray(models) || models.length === 0) return [];
+    if (symbol === 'ALL') return models;
+    return models.filter((m) => {
+      const s = String(m.symbol || m.asset_symbol || m.raw_symbol || '').toUpperCase();
+      return s === symbol.toUpperCase() || s.replace(/_/g, '') === symbol.replace(/_/g, '').toUpperCase();
+    });
+  }, [models, symbol]);
+
+  // Extract dynamic benchmark rows from genuine persisted database models
+  const { benchmarkRows, isUnifiedActive, overallAccuracyGain, computeEfficiency } = useMemo(() => {
+    if (symbolModels.length === 0) {
+      return { benchmarkRows: [], isUnifiedActive: false, overallAccuracyGain: null, computeEfficiency: null };
+    }
+
+    // Find multi-horizon unified models (prefer production, then candidate/staging)
+    const unifiedModels = symbolModels.filter((m) => {
+      const isMulti = m.hyperparameters?.is_multi_horizon || m.metrics?.trainedOnceForMultiHorizon || m.is_multi_horizon;
+      const hasHorizonMetrics = m.metrics?.horizonMetrics && typeof m.metrics.horizonMetrics === 'object';
+      const isIdPattern = typeof m.model_id === 'string' && (m.model_id.includes('_multi_') || m.model_id.includes('_unified_'));
+      return isMulti || hasHorizonMetrics || isIdPattern;
+    });
+
+    // Sort unified models to prioritize production champions
+    const sortedUnified = [...unifiedModels].sort((a, b) => {
+      if (a.status === 'production' && b.status !== 'production') return -1;
+      if (b.status === 'production' && a.status !== 'production') return 1;
+      const tA = new Date(a.created_at || 0).getTime();
+      const tB = new Date(b.created_at || 0).getTime();
+      return tB - tA;
+    });
+
+    const activeUnified = sortedUnified[0];
+    const legacyModels = symbolModels.filter((m) => m !== activeUnified && !unifiedModels.includes(m));
+
+    const rows: HorizonBenchmarkRow[] = [];
+
+    if (activeUnified?.metrics?.horizonMetrics && typeof activeUnified.metrics.horizonMetrics === 'object') {
+      const hMetrics = activeUnified.metrics.horizonMetrics as Record<string, any>;
+      
+      for (const [key, metricObj] of Object.entries(hMetrics)) {
+        if (!metricObj || typeof metricObj !== 'object') continue;
+        const parsed = parseHorizonLabel(key);
+        
+        // Find matching legacy single-duration model if one exists
+        const matchingLegacy = legacyModels.find((lm) => {
+          const lmHorizon = lm.horizon_secs || lm.raw_horizon_ticks || lm.horizon_ticks;
+          return lmHorizon === parsed.value || lmHorizon === parsed.seconds;
+        });
+
+        const rawAcc = Number(metricObj.accuracy ?? activeUnified.metrics?.accuracy ?? 0);
+        const unifiedAcc = rawAcc > 1 ? rawAcc : rawAcc * 100;
+        
+        const rawWinRate = Number(metricObj.winRate ?? activeUnified.metrics?.winRate ?? activeUnified.backtest_win_rate ?? 0);
+        const unifiedWinRate = rawWinRate > 1 ? rawWinRate : rawWinRate * 100;
+        
+        const unifiedLogLoss = Number(metricObj.logLoss ?? activeUnified.metrics?.logLoss ?? 0.5);
+        const sampleCount = Number(metricObj.samples ?? activeUnified.metrics?.validationSamples ?? 0);
+
+        let legacyAcc: number | null = null;
+        let legacyWinRate: number | null = null;
+        let legacyLogLoss: number | null = null;
+
+        if (matchingLegacy) {
+          const lAcc = Number(matchingLegacy.metrics?.accuracy ?? matchingLegacy.accuracy ?? 0);
+          legacyAcc = lAcc > 1 ? lAcc : lAcc * 100;
+          const lWr = Number(matchingLegacy.metrics?.winRate ?? matchingLegacy.backtest_win_rate ?? 0);
+          legacyWinRate = lWr > 1 ? lWr : lWr * 100;
+          legacyLogLoss = Number(matchingLegacy.metrics?.logLoss ?? 0.6);
+        }
+
+        rows.push({
+          horizonKey: key,
+          label: parsed.label,
+          unit: parsed.unit,
+          value: parsed.value,
+          seconds: parsed.seconds,
+          unifiedAccuracy: unifiedAcc,
+          unifiedWinRate: unifiedWinRate,
+          unifiedLogLoss: unifiedLogLoss,
+          legacyAccuracy: legacyAcc,
+          legacyWinRate: legacyWinRate,
+          legacyLogLoss: legacyLogLoss,
+          sampleCount,
+          status: (activeUnified.status as any) || 'staging',
+          isUnified: true,
+        });
+      }
+    } else {
+      // No unified multi-horizon model yet; list existing single-horizon models dynamically
+      for (const m of symbolModels) {
+        const horizon = Number(m.horizon_secs || m.raw_horizon_ticks || m.horizon_ticks || 1);
+        const parsed = parseHorizonLabel(`${horizon}s`);
+        const rawAcc = Number(m.metrics?.accuracy ?? m.accuracy ?? 0);
+        const acc = rawAcc > 1 ? rawAcc : rawAcc * 100;
+        const rawWr = Number(m.metrics?.winRate ?? m.backtest_win_rate ?? 0);
+        const wr = rawWr > 1 ? rawWr : rawWr * 100;
+        const loss = Number(m.metrics?.logLoss ?? 0.5);
+
+        rows.push({
+          horizonKey: `${horizon}s`,
+          label: parsed.label,
+          unit: parsed.unit,
+          value: parsed.value,
+          seconds: parsed.seconds,
+          unifiedAccuracy: acc,
+          unifiedWinRate: wr,
+          unifiedLogLoss: loss,
+          legacyAccuracy: null,
+          legacyWinRate: null,
+          legacyLogLoss: null,
+          sampleCount: Number(m.metrics?.validationSamples || 0),
+          status: (m.status as any) || 'staging',
+          isUnified: false,
+        });
+      }
+    }
+
+    // Sort rows by duration in seconds
+    rows.sort((a, b) => a.seconds - b.seconds);
+
+    // Calculate dynamic gain and efficiency
+    let gainStr: string | null = null;
+    const rowsWithLegacy = rows.filter((r) => r.legacyAccuracy !== null);
+    if (rowsWithLegacy.length > 0) {
+      const avgUnified = rowsWithLegacy.reduce((s, r) => s + r.unifiedAccuracy, 0) / rowsWithLegacy.length;
+      const avgLegacy = rowsWithLegacy.reduce((s, r) => s + (r.legacyAccuracy ?? 0), 0) / rowsWithLegacy.length;
+      const delta = avgUnified - avgLegacy;
+      gainStr = `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%`;
+    }
+
+    const efficiency = rows.length > 1 ? `${rows.length}x Models Consolidated` : '1-to-1 Architecture';
+
+    return {
+      benchmarkRows: rows,
+      isUnifiedActive: activeUnified?.status === 'production',
+      overallAccuracyGain: gainStr,
+      computeEfficiency: efficiency,
+    };
+  }, [symbolModels]);
 
   const filteredRows = useMemo(() => {
     if (selectedHorizon === 'all') return benchmarkRows;
     if (selectedHorizon === 'ticks') return benchmarkRows.filter((r) => r.unit === 't');
-    if (selectedHorizon === 'seconds') return benchmarkRows.filter((r) => r.unit === 's');
+    if (selectedHorizon === 'seconds') return benchmarkRows.filter((r) => r.unit === 's' || r.unit === 'm');
     return benchmarkRows.filter((r) => r.horizonKey === selectedHorizon);
   }, [benchmarkRows, selectedHorizon]);
 
   const avgUnifiedAcc = useMemo(() => {
+    if (benchmarkRows.length === 0) return '—';
     return (benchmarkRows.reduce((sum, r) => sum + r.unifiedAccuracy, 0) / benchmarkRows.length).toFixed(1);
   }, [benchmarkRows]);
 
-  const avgLegacyAcc = useMemo(() => {
-    const valid = benchmarkRows.filter((r) => r.legacyAccuracy !== null);
-    if (!valid.length) return '—';
-    return (valid.reduce((sum, r) => sum + (r.legacyAccuracy ?? 0), 0) / valid.length).toFixed(1);
-  }, [benchmarkRows]);
+  // Empty state when database has 0 models for this asset
+  if (benchmarkRows.length === 0) {
+    return (
+      <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6 shadow-2xl space-y-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-white/10 pb-5">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl border border-slate-700 bg-slate-800/50 p-3 text-slate-400">
+              <Trophy className="h-6 w-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Dynamic Benchmark Matrix
+                </span>
+                <span className="rounded-full border border-slate-700 bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-400">
+                  Awaiting Models
+                </span>
+              </div>
+              <h2 className="text-xl font-black tracking-tight text-white sm:text-2xl">
+                Unified Multi-Horizon vs Legacy Benchmarks
+              </h2>
+              <p className="text-xs text-slate-400">
+                Live performance matrix for {symbol === 'ALL' ? 'all assets' : symbol}
+              </p>
+            </div>
+          </div>
+        </div>
 
-  const avgAccuracyDelta = useMemo(() => {
-    const u = Number(avgUnifiedAcc);
-    const l = Number(avgLegacyAcc);
-    if (!Number.isFinite(u) || !Number.isFinite(l)) return '+2.9%';
-    const delta = u - l;
-    return `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`;
-  }, [avgUnifiedAcc, avgLegacyAcc]);
+        <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-8 text-center space-y-3">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-cyan-500/10 text-cyan-400">
+            <Activity className="h-6 w-6" />
+          </div>
+          <h3 className="text-base font-bold text-white">No Registered Models for {symbol}</h3>
+          <p className="max-w-md mx-auto text-xs text-slate-400 leading-relaxed">
+            There are currently no trained models in the database for this asset. Once market tick data is ingested and a Unified Multi-Horizon model is trained, real validation accuracy, win rates, and cross-horizon metrics will appear here automatically.
+          </p>
+          <div className="pt-2">
+            <Link
+              href="/admin/training"
+              className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition shadow-lg shadow-cyan-500/20"
+            >
+              <Cpu className="h-4 w-4" />
+              Train Multi-Horizon Model
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </div>
+        </div>
+
+        {/* Dynamic Architectural Overview */}
+        <div className="grid gap-4 sm:grid-cols-3 pt-2">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+            <div className="flex items-center gap-2 text-xs font-bold text-cyan-300 mb-1">
+              <Cpu className="h-4 w-4" />
+              Zero-Fragmentation Inference
+            </div>
+            <p className="text-[11px] leading-relaxed text-slate-400">
+              A single unified model artifact conditions continuously on duration tokens `[is_tick, log(v+1), log(ticks+1), log(secs+1)]`, eliminating multi-model memory fragmentation.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+            <div className="flex items-center gap-2 text-xs font-bold text-emerald-300 mb-1">
+              <ShieldCheck className="h-4 w-4" />
+              Horizon-Aware Risk Gates
+            </div>
+            <p className="text-[11px] leading-relaxed text-slate-400">
+              Dynamic safety thresholds filter high-frequency microstructure noise across 1T-10T and 15s-300s duration horizons.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+            <div className="flex items-center gap-2 text-xs font-bold text-amber-300 mb-1">
+              <Archive className="h-4 w-4" />
+              Automated Champion Governance
+            </div>
+            <p className="text-[11px] leading-relaxed text-slate-400">
+              Challenger models must strictly improve persisted validation accuracy without regressing F1 scores before winning production promotion.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-3xl border border-cyan-500/20 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-950/40 p-6 shadow-2xl space-y-6">
@@ -243,32 +315,45 @@ export function HorizonBenchmarkLeaderboard({
           <div>
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400">
-                Automated Benchmark Leaderboard
+                Dynamic Benchmark Matrix
               </span>
-              <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
-                Unified Model Active
+              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${
+                isUnifiedActive
+                  ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300'
+                  : 'border-cyan-400/30 bg-cyan-500/10 text-cyan-300'
+              }`}>
+                {isUnifiedActive ? 'Unified Production Champion' : 'Evaluated Registry Models'}
               </span>
             </div>
             <h2 className="text-xl font-black tracking-tight text-white sm:text-2xl">
-              Unified Multi-Horizon vs Legacy Duration Models
+              Cross-Horizon Performance Matrix
             </h2>
             <p className="text-xs text-slate-400">
-              Cross-horizon performance comparison for {symbol} · 1 Single Model Trained Once vs N Legacy Models
+              Real persisted validation metrics for {symbol === 'ALL' ? 'all assets' : symbol} ({benchmarkRows.length} active duration horizons)
             </p>
           </div>
         </div>
 
-        {/* Aggregate Win Badge */}
+        {/* Dynamic Aggregate Win Badge */}
         <div className="flex items-center gap-3 rounded-2xl border border-emerald-500/30 bg-emerald-950/40 px-4 py-2.5">
           <div>
-            <div className="text-[10px] font-bold uppercase text-emerald-400 tracking-wider">Overall Accuracy Gain</div>
-            <div className="text-xl font-black text-emerald-300">{avgAccuracyDelta}</div>
+            <div className="text-[10px] font-bold uppercase text-emerald-400 tracking-wider">Average Accuracy</div>
+            <div className="text-xl font-black text-emerald-300">{avgUnifiedAcc}%</div>
           </div>
           <div className="h-8 w-px bg-emerald-500/30" />
           <div>
-            <div className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Training Efficiency</div>
-            <div className="text-xl font-black text-cyan-300">10x Compute Saved</div>
+            <div className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Architecture</div>
+            <div className="text-xl font-black text-cyan-300">{computeEfficiency || 'Dynamic'}</div>
           </div>
+          {overallAccuracyGain && (
+            <>
+              <div className="h-8 w-px bg-emerald-500/30" />
+              <div>
+                <div className="text-[10px] font-bold uppercase text-emerald-400 tracking-wider">Vs Legacy</div>
+                <div className="text-xl font-black text-emerald-300">{overallAccuracyGain}</div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -291,7 +376,7 @@ export function HorizonBenchmarkLeaderboard({
               selectedHorizon === 'ticks' ? 'bg-cyan-500 text-slate-950 font-bold shadow' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Tick Horizons (1T - 10T)
+            Ticks
           </button>
           <button
             type="button"
@@ -300,7 +385,7 @@ export function HorizonBenchmarkLeaderboard({
               selectedHorizon === 'seconds' ? 'bg-cyan-500 text-slate-950 font-bold shadow' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Second Horizons (15s - 300s)
+            Seconds / Minutes
           </button>
         </div>
 
@@ -312,7 +397,7 @@ export function HorizonBenchmarkLeaderboard({
               metricMode === 'accuracy' ? 'bg-white/15 text-white font-bold' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Accuracy %
+            Validation Accuracy %
           </button>
           <button
             type="button"
@@ -335,16 +420,16 @@ export function HorizonBenchmarkLeaderboard({
         </div>
       </div>
 
-      {/* Leaderboard Table */}
+      {/* Dynamic Leaderboard Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/10 bg-white/[0.02]">
         <table className="w-full text-left text-xs text-slate-300">
           <thead className="border-b border-white/10 bg-white/5 text-[11px] font-bold uppercase tracking-wider text-slate-400">
             <tr>
               <th className="px-4 py-3">Horizon</th>
-              <th className="px-4 py-3">Unified Model (Horizon-Conditioned)</th>
+              <th className="px-4 py-3">Persisted Score ({metricMode === 'accuracy' ? 'Accuracy' : metricMode === 'winrate' ? 'Win Rate' : 'Log Loss'})</th>
               <th className="px-4 py-3">Legacy Single-Duration</th>
               <th className="px-4 py-3">Performance Advantage</th>
-              <th className="px-4 py-3">Min Confidence Gate</th>
+              <th className="px-4 py-3">Validation Samples</th>
               <th className="px-4 py-3 text-right">Operational Status</th>
             </tr>
           </thead>
@@ -354,9 +439,6 @@ export function HorizonBenchmarkLeaderboard({
               const lMetric = metricMode === 'accuracy' ? row.legacyAccuracy : metricMode === 'winrate' ? row.legacyWinRate : row.legacyLogLoss;
               const delta = lMetric !== null ? (metricMode === 'loss' ? lMetric - uMetric : uMetric - lMetric) : null;
               const isGain = delta !== null ? delta > 0 : true;
-
-              // Recommended min confidence threshold by horizon
-              const minConf = row.unit === 't' ? (row.value === 1 ? 74 : row.value <= 3 ? 72 : 70) : (row.seconds <= 30 ? 71 : 70);
 
               return (
                 <tr key={row.horizonKey} className="hover:bg-white/[0.03] transition">
@@ -370,19 +452,21 @@ export function HorizonBenchmarkLeaderboard({
                   <td className="px-4 py-3.5 font-mono font-bold text-emerald-300">
                     <div className="flex items-center gap-2">
                       <span>
-                        {metricMode === 'loss' ? uMetric.toFixed(3) : `${uMetric.toFixed(1)}%`}
+                        {metricMode === 'loss' ? uMetric.toFixed(3) : `${uMetric.toFixed(2)}%`}
                       </span>
-                      <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[9px] text-emerald-400">
-                        1-Model
-                      </span>
+                      {row.isUnified && (
+                        <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[9px] text-emerald-400">
+                          1-Model
+                        </span>
+                      )}
                     </div>
                   </td>
 
                   <td className="px-4 py-3.5 font-mono text-slate-400">
                     {lMetric !== null ? (
-                      <span>{metricMode === 'loss' ? lMetric.toFixed(3) : `${lMetric.toFixed(1)}%`}</span>
+                      <span>{metricMode === 'loss' ? lMetric.toFixed(3) : `${lMetric.toFixed(2)}%`}</span>
                     ) : (
-                      <span className="text-slate-600 italic">Deprecated</span>
+                      <span className="text-slate-600 italic">None recorded</span>
                     )}
                   </td>
 
@@ -404,13 +488,19 @@ export function HorizonBenchmarkLeaderboard({
                   </td>
 
                   <td className="px-4 py-3.5 font-mono text-cyan-300 font-semibold">
-                    {minConf}% minimum
+                    {row.sampleCount > 0 ? row.sampleCount.toLocaleString() : 'Live evaluated'}
                   </td>
 
                   <td className="px-4 py-3.5 text-right">
-                    <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-0.5 text-[10px] font-bold text-emerald-300">
+                    <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${
+                      row.status === 'production'
+                        ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300'
+                        : row.status === 'staging' || row.status === 'candidate'
+                        ? 'border-cyan-400/30 bg-cyan-500/10 text-cyan-300'
+                        : 'border-slate-600 bg-slate-800 text-slate-400'
+                    }`}>
                       <CheckCircle2 className="h-3 w-3" />
-                      Production Champion
+                      {row.status.toUpperCase()}
                     </span>
                   </td>
                 </tr>
@@ -420,7 +510,7 @@ export function HorizonBenchmarkLeaderboard({
         </table>
       </div>
 
-      {/* Summary Insights & Decommission Guidance */}
+      {/* Dynamic Architecture Summary */}
       <div className="grid gap-4 sm:grid-cols-3 pt-2">
         <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
           <div className="flex items-center gap-2 text-xs font-bold text-cyan-300 mb-1">
@@ -439,19 +529,17 @@ export function HorizonBenchmarkLeaderboard({
             Horizon-Aware Risk Gates
           </div>
           <p className="text-[11px] leading-relaxed text-slate-400">
-            Micro-horizons (1T, 2T) enforce dynamic safety offsets (74% min threshold) to filter high-frequency
-            microstructure noise before trade execution.
+            Dynamic safety offsets filter high-frequency microstructure noise before signal execution.
           </p>
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
           <div className="flex items-center gap-2 text-xs font-bold text-amber-300 mb-1">
             <Archive className="h-4 w-4" />
-            Legacy Model Decommission
+            Champion Governance
           </div>
           <p className="text-[11px] leading-relaxed text-slate-400">
-            Legacy single-duration datasets and models are systematically bypassed in favor of Unified Multi-Horizon
-            models, reducing training disk overhead by 85%.
+            Automated Pareto gates safeguard production champions against regression across all duration horizons.
           </p>
         </div>
       </div>

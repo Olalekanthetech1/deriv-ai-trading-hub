@@ -360,9 +360,9 @@ export function UnifiedMultiHorizonTrainingPanel({ initialDatasetId }: { initial
                 })}
               </div>
               <p className="mt-2.5 text-[11px] text-slate-400 leading-relaxed bg-white/[0.02] border border-white/5 p-2.5 rounded-xl">
-                💡 <span className="font-semibold text-slate-300">Why 3 algorithms here?</span> Unified multi-horizon conditioning embeds duration vectors directly into tree-based gradient boosted models. To train all <span className="font-semibold text-cyan-300">8 platform models</span> (including TCN, LSTM, Transformer, HMM Regime, and Isolation Forest), use the{' '}
+                💡 <span className="font-semibold text-slate-300">Why 3 algorithms here?</span> Unified multi-horizon conditioning embeds duration vectors directly into tree-based gradient boosted models (XGBoost, LightGBM, CatBoost). To train sequence architectures (LSTM, TCN, Transformer) and specialized models (HMM Regime, Isolation Forest), switch to the{' '}
                 <Link href="/admin/training-pipeline?tab=standard" className="text-cyan-400 font-semibold underline hover:text-cyan-300">
-                  Standard Training Pipeline
+                  Deep Sequence & Specialized Models tab
                 </Link>.
               </p>
             </div>

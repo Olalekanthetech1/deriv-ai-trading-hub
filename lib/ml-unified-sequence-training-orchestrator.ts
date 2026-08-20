@@ -8,12 +8,14 @@ import { mlRuntimeClient } from './ml-runtime-client';
 import { persistModelArtifact } from './ml-model-artifact-store';
 import { registerDurationModel } from './duration-model-registry';
 import { loadUnifiedSequenceDataset } from './ml-unified-sequence-adapter';
+import { evaluateAndPromoteCandidateModels } from './ml-pipeline-auto-evaluator';
 
 export type UnifiedSequenceTrainingRequest = {
   datasetId: string;
   horizonKey: string;
   modelTypes?: string[];
   trainingRunId?: string;
+  autoPromote?: boolean;
 };
 
 function workerId(): string {
@@ -183,7 +185,21 @@ export async function trainUnifiedSequenceModels(request: UnifiedSequenceTrainin
     }
     const finalStatus = completed > 0 && failed === 0 ? 'completed' : completed > 0 ? 'partial' : 'failed';
     await sql`UPDATE ml_training_runs SET status=${finalStatus}::varchar,completed_models=${completed}::integer,failed_models=${failed}::integer,completed_at=NOW(),heartbeat_at=NULL,updated_at=NOW(),metadata=COALESCE(metadata,'{}'::jsonb) || ${JSON.stringify({ datasetSource: 'unified', sourceDatasetId: dataset.sourceDatasetId, horizonKey: dataset.horizonKey })}::jsonb WHERE run_id=${runId}::uuid`;
-    return { runId, status: finalStatus, completedModels: completed, failedModels: failed, results, sourceDatasetId: dataset.sourceDatasetId, horizonKey: dataset.horizonKey };
+
+    // Automated Walk-Forward Backtest & Governed Cohort Promotion Phase
+    let pipelineEvaluation = null;
+    const trainedModelIds = results.filter((r) => r.status === 'completed' && r.modelId).map((r) => String(r.modelId));
+    if (trainedModelIds.length > 0) {
+      try {
+        pipelineEvaluation = await evaluateAndPromoteCandidateModels(trainedModelIds, {
+          autoPromoteOnPass: request.autoPromote ?? true,
+        });
+      } catch (evalErr) {
+        console.warn(`[ML Sequence Training Pipeline] Auto-backtest evaluation error for run ${runId}:`, evalErr);
+      }
+    }
+
+    return { runId, status: finalStatus, completedModels: completed, failedModels: failed, results, sourceDatasetId: dataset.sourceDatasetId, horizonKey: dataset.horizonKey, pipelineEvaluation };
   } finally {
     clearInterval(runHeartbeat);
   }
