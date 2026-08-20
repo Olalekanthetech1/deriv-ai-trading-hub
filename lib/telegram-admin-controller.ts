@@ -11,6 +11,20 @@ import { generateDailyOperationsSummary } from './telegram-telemetry-alert-engin
 
 const ALERT_TELEGRAM_API_BASE = 'https://api.telegram.org/bot';
 
+function markdownToHtml(md: string): string {
+  if (!md) return '';
+  let html = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*([^*]+)\*/g, '<b>$1</b>');
+  html = html.replace(/_([^_]+)_/g, '<i>$1</i>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  return html;
+}
+
 export class TelegramAdminController {
   private getBotToken(): string {
     const token = process.env.ALERT_TELEGRAM_BOT_TOKEN?.trim();
@@ -21,6 +35,14 @@ export class TelegramAdminController {
   }
 
   async sendApi(method: string, payload: Record<string, unknown>) {
+    if (payload && payload.parse_mode === 'Markdown' && typeof payload.text === 'string') {
+      payload = {
+        ...payload,
+        text: markdownToHtml(payload.text),
+        parse_mode: 'HTML',
+      };
+    }
+
     const token = this.getBotToken();
     const url = `${ALERT_TELEGRAM_API_BASE}${token}/${method}`;
     const res = await fetch(url, {

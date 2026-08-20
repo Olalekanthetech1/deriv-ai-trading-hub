@@ -19,6 +19,20 @@ function escapeMarkdown(text: string): string {
   return text.replace(/([_*\[`])/g, '\\$1');
 }
 
+function markdownToHtml(md: string): string {
+  if (!md) return '';
+  let html = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*([^*]+)\*/g, '<b>$1</b>');
+  html = html.replace(/_([^_]+)_/g, '<i>$1</i>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  return html;
+}
+
 type LiveSignal = {
   prediction: {
     signal: 'CALL' | 'PUT';
@@ -103,6 +117,14 @@ export class TelegramBotController {
 
   async sendApi(method: string, payload: Record<string, any>) {
     if (!this.botToken) throw new Error('TELEGRAM_BOT_TOKEN is not configured');
+
+    if (payload && payload.parse_mode === 'Markdown' && typeof payload.text === 'string') {
+      payload = {
+        ...payload,
+        text: markdownToHtml(payload.text),
+        parse_mode: 'HTML',
+      };
+    }
 
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= 3; attempt += 1) {

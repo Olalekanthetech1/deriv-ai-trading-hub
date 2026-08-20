@@ -250,7 +250,7 @@ class MlRuntimeClient {
       : action === 'backtest'
         ? 60000
         : action === 'predict_ensemble'
-          ? 15000
+          ? 30000
           : 5000;
     const configuredTimeout = Number(process.env.ML_PREDICT_ENSEMBLE_TIMEOUT_MS);
     const timeoutMs = action === 'predict_ensemble' && Number.isFinite(configuredTimeout) && configuredTimeout >= 5000 && configuredTimeout <= 60000
@@ -328,7 +328,7 @@ class MlRuntimeClient {
         : action === 'backtest'
           ? 60000
           : action === 'predict_ensemble'
-            ? 15000
+            ? 30000
             : 5000;
       const configuredTimeout = Number(process.env.ML_PREDICT_ENSEMBLE_TIMEOUT_MS);
       const timeoutMs = action === 'predict_ensemble' && Number.isFinite(configuredTimeout) && configuredTimeout >= 5000 && configuredTimeout <= 60000

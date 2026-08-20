@@ -86,9 +86,15 @@ export async function POST(req: NextRequest) {
           show_alert: true,
         });
       } else if (chatId) {
+        let msg = `⛔ *UNAUTHORIZED OPERATIONAL ACCESS*\n\nYour Telegram User ID \`${userId}\` is not authorized to access system administration controls.`;
+        if (auth.reason === 'ALERT_TELEGRAM_ADMIN_USER_IDS_UNCONFIGURED') {
+          msg += `\n\n*Reason:* \`ALERT_TELEGRAM_ADMIN_USER_IDS\` is not configured in your environment variables.`;
+        } else {
+          msg += `\n\n*Action:* Add your Telegram User ID \`${userId}\` to the \`ALERT_TELEGRAM_ADMIN_USER_IDS\` comma-separated environment variable list on Render to authorize it.`;
+        }
         await controller.sendApi('sendMessage', {
           chat_id: chatId,
-          text: '⛔ *UNAUTHORIZED OPERATIONAL ACCESS*\n\nYour Telegram User ID is not authorized to access system administration controls.',
+          text: msg,
           parse_mode: 'Markdown',
         });
       }

@@ -6,6 +6,20 @@
 
 import { recordObservabilityEvent } from './observability';
 
+function markdownToHtml(md: string): string {
+  if (!md) return '';
+  let html = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*([^*]+)\*/g, '<b>$1</b>');
+  html = html.replace(/_([^_]+)_/g, '<i>$1</i>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  return html;
+}
+
 export interface DriftAlertPayload {
   modelId: string;
   modelKey: string;
@@ -118,8 +132,8 @@ Corrective Action Taken:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: telegramChatId,
-          text: telegramMessage,
-          parse_mode: 'Markdown',
+          text: markdownToHtml(telegramMessage),
+          parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
               [

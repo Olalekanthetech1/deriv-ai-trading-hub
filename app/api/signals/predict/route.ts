@@ -210,7 +210,10 @@ export async function POST(req: NextRequest) {
       enforceRequestedDuration: true,
     });
     const finalHorizon = horizonFromDecision(decisionSnapshot.decision.horizon);
-    if (!sameHorizon(selectedHorizon, finalHorizon)) throw new Error('HORIZON_ALIGNMENT_FAILED');
+    if (!sameHorizon(selectedHorizon, finalHorizon)) {
+      console.error(`[HORIZON_ALIGNMENT_FAILED] selectedHorizon=${selectedHorizon.value}${selectedHorizon.unit} finalHorizon=${finalHorizon.value}${finalHorizon.unit}`);
+      throw new Error(`HORIZON_ALIGNMENT_FAILED:selected=${selectedHorizon.value}${selectedHorizon.unit}_final=${finalHorizon.value}${finalHorizon.unit}`);
+    }
 
     const complianceCheck = await validateHdeCompliance({ symbol, horizon: { value: finalHorizon.value, unit: finalHorizon.unit }, features: predictionEnsemble.features, mode });
     if (!complianceCheck.valid) throw new Error(`HDE_COMPLIANCE_ERROR:${complianceCheck.rejectionReason}`);

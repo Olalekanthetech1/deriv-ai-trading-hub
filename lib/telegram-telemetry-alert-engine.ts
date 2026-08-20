@@ -1,6 +1,20 @@
 import { getDb } from './db';
 import { recordObservabilityEvent } from './observability';
 
+function markdownToHtml(md: string): string {
+  if (!md) return '';
+  let html = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*([^*]+)\*/g, '<b>$1</b>');
+  html = html.replace(/_([^_]+)_/g, '<i>$1</i>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  return html;
+}
+
 /**
  * Privacy-Preserving Telegram Telemetry & Alert Rules Engine
  * Implements real-time alerting based on aggregated broker latency/failure metrics
@@ -93,8 +107,8 @@ export async function evaluateTelemetryAlertRules(sqlInput?: any): Promise<{
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: chatId,
-        text: tgMessage,
-        parse_mode: 'Markdown',
+        text: markdownToHtml(tgMessage),
+        parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
             [
@@ -244,8 +258,8 @@ export async function triggerDailySummaryTelegram(sqlInput?: any): Promise<boole
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: chatId,
-        text: message,
-        parse_mode: 'Markdown',
+        text: markdownToHtml(message),
+        parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
             [
