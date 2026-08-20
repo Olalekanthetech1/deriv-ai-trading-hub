@@ -46,20 +46,40 @@ export default function ModelCleanupPage() {
 
   const cleanup = async () => {
     if (!selected.length) return;
-    const chosen = models.filter(model => selected.includes(model.model_id));
-    const confirmed = window.confirm(`PERMANENTLY DELETE ${chosen.length} candidate/staging model registry record(s)?\n\nProduction models cannot be selected. Database-linked child records may be cascaded or detached according to the existing schema. External artifact files will NOT be deleted.\n\nThis action is intended to clear old candidates before a new training run.`);
+    const isAll = allSelected || selected.length === models.length;
+    const chosenCount = selected.length;
+    const confirmed = window.confirm(`PERMANENTLY DELETE ${chosenCount} candidate/staging model registry record(s)?\n\nProduction models cannot be selected. Database-linked child records may be cascaded or detached according to the existing schema. External artifact files will NOT be deleted.\n\nThis action is intended to clear old candidates before a new training run.`);
     if (!confirmed) return;
 
     setBusy(true); setError(null); setMessage(null);
     try {
-      const response = await fetch('/api/admin/model-cleanup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cleanup', modelIds: selected, confirm: true }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok || body.success === false) throw new Error(body.error || `Cleanup returned HTTP ${response.status}.`);
-      setMessage(`Successfully removed ${body.deletedCount} old model registry record(s).`);
+      if (isAll) {
+        // Fast atomic server-side purge for all candidates
+        const response = await fetch('/api/admin/model-cleanup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'cleanup', purgeAllCandidates: true, confirm: true, force: true }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body.success === false) throw new Error(body.error || `Cleanup returned HTTP ${response.status}.`);
+        setMessage(`Successfully purged all ${body.deletedCount} old candidate/staging model record(s).`);
+      } else {
+        // Chunk deletions into safe batches of 500
+        const CHUNK_SIZE = 500;
+        let totalDeleted = 0;
+        for (let i = 0; i < selected.length; i += CHUNK_SIZE) {
+          const chunk = selected.slice(i, i + CHUNK_SIZE);
+          const response = await fetch('/api/admin/model-cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'cleanup', modelIds: chunk, confirm: true, force: true }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok || body.success === false) throw new Error(body.error || `Cleanup chunk ${Math.floor(i / CHUNK_SIZE) + 1} failed.`);
+          totalDeleted += (body.deletedCount || chunk.length);
+        }
+        setMessage(`Successfully removed ${totalDeleted} selected candidate model registry record(s).`);
+      }
       await load();
     } catch (err) { setError(err instanceof Error ? err.message : 'Model cleanup failed.'); }
     finally { setBusy(false); }

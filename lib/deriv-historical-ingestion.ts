@@ -273,6 +273,7 @@ export async function ingestDerivHistoricalTicks(input: {
   symbol: string;
   count: number;
   resumeFromCheckpoint?: boolean;
+  freshIngest?: boolean;
   endEpoch?: number | 'latest';
 }) {
   const dbUrl = getDbConnectionString();
@@ -286,8 +287,13 @@ export async function ingestDerivHistoricalTicks(input: {
   const requestedCount = Math.min(50_000, Math.max(50, Math.floor(input.count)));
   await initDbSchema();
   const sql: Sql = neon(dbUrl) as any;
+
+  if (input.freshIngest) {
+    await purgeMarketTicksForSymbol(normalizedSymbol, { reason: 'fresh_ingest_session' });
+  }
+
   const startedAt = new Date().toISOString();
-  const shouldResume = Boolean(input.resumeFromCheckpoint);
+  const shouldResume = !input.freshIngest && Boolean(input.resumeFromCheckpoint);
 
   let run = shouldResume ? await findResumableRun(sql, normalizedSymbol, requestedCount) : null;
   const isContinuingSession = Boolean(run);
@@ -579,4 +585,87 @@ export async function clearHistoricalIngestionRuns(filter: 'all' | 'failed' | st
   }
 
   return { deletedCount: rows.length };
+}
+
+export async function purgeMarketTicksForSymbol(
+  symbol: string,
+  options?: { actor?: string; reason?: string }
+): Promise<{
+  symbol: string;
+  deletedTicks: number;
+  deletedCheckpoints: number;
+  deletedRuns: number;
+}> {
+  const dbUrl = getDbConnectionString();
+  if (!dbUrl) throw new Error('DATABASE_URL is required for purge operations.');
+
+  const trimmed = symbol.trim().toUpperCase();
+  const isAll = trimmed === 'ALL' || trimmed === '*';
+  const normalizedSymbol = isAll ? 'ALL' : normalizeSymbol(symbol);
+
+  if (!isAll && !isValidSymbol(normalizedSymbol)) {
+    throw new Error(`Invalid Deriv symbol for tick purge: ${symbol}`);
+  }
+
+  await initDbSchema();
+  const sql: Sql = neon(dbUrl) as any;
+  const actor = options?.actor || 'admin';
+  const reason = options?.reason || 'admin_manual_purge';
+
+  let deletedTicks = 0;
+  let deletedCheckpoints = 0;
+  let deletedRuns = 0;
+
+  if (isAll) {
+    const ticksResult = await sql`DELETE FROM market_ticks RETURNING id`;
+    deletedTicks = Array.isArray(ticksResult) ? ticksResult.length : 0;
+
+    const checkpointsResult = await sql`DELETE FROM data_ingestion_checkpoints WHERE source = 'deriv' RETURNING asset_symbol`;
+    deletedCheckpoints = Array.isArray(checkpointsResult) ? checkpointsResult.length : 0;
+
+    const runsResult = await sql`DELETE FROM data_ingestion_runs WHERE source = 'deriv' RETURNING id`;
+    deletedRuns = Array.isArray(runsResult) ? runsResult.length : 0;
+  } else {
+    const ticksResult = await sql`DELETE FROM market_ticks WHERE symbol = ${normalizedSymbol} RETURNING id`;
+    deletedTicks = Array.isArray(ticksResult) ? ticksResult.length : 0;
+
+    const checkpointsResult = await sql`DELETE FROM data_ingestion_checkpoints WHERE source = 'deriv' AND asset_symbol = ${normalizedSymbol} RETURNING asset_symbol`;
+    deletedCheckpoints = Array.isArray(checkpointsResult) ? checkpointsResult.length : 0;
+
+    const runsResult = await sql`DELETE FROM data_ingestion_runs WHERE source = 'deriv' AND asset_symbol = ${normalizedSymbol} RETURNING id`;
+    deletedRuns = Array.isArray(runsResult) ? runsResult.length : 0;
+  }
+
+  // Audit event logging
+  try {
+    await sql`
+      INSERT INTO ops_audit_events (
+        category, severity, actor, action, resource_type, resource_id, metadata
+      ) VALUES (
+        'market_data',
+        'warning',
+        ${actor},
+        'purge_market_ticks',
+        'market_ticks',
+        ${normalizedSymbol},
+        ${JSON.stringify({
+          symbol: normalizedSymbol,
+          deletedTicks,
+          deletedCheckpoints,
+          deletedRuns,
+          reason,
+          timestamp: new Date().toISOString(),
+        })}::jsonb
+      )
+    `;
+  } catch (auditError) {
+    console.error('[purgeMarketTicksForSymbol] Failed to record audit log', auditError);
+  }
+
+  return {
+    symbol: normalizedSymbol,
+    deletedTicks,
+    deletedCheckpoints,
+    deletedRuns,
+  };
 }

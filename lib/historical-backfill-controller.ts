@@ -3,6 +3,7 @@ import { getDbConnectionString, initDbSchema } from '@/lib/db';
 import {
   getHistoricalIngestionCheckpoint,
   ingestDerivHistoricalTicks,
+  purgeMarketTicksForSymbol,
   type HistoricalIngestionRun,
 } from '@/lib/deriv-historical-ingestion';
 
@@ -109,6 +110,7 @@ function maxTime(a: string | null, b: string | null): string | null {
 export async function ingestDerivHistoricalBackfill(input: {
   symbol: string;
   targetCount: number;
+  freshIngest?: boolean;
 }) {
   const dbUrl = getDbConnectionString();
   if (!dbUrl) throw new Error('DATABASE_URL is required for ingestion.');
@@ -118,8 +120,13 @@ export async function ingestDerivHistoricalBackfill(input: {
 
   await initDbSchema();
   const sql: Sql = neon(dbUrl) as any;
-  const currentCount = await getStoredTickCount(sql, symbol);
-  const latestRun = await getLatestLogicalRun(sql, symbol);
+
+  if (input.freshIngest) {
+    await purgeMarketTicksForSymbol(symbol, { reason: 'fresh_ingest_backfill' });
+  }
+
+  const currentCount = input.freshIngest ? 0 : await getStoredTickCount(sql, symbol);
+  const latestRun = input.freshIngest ? null : await getLatestLogicalRun(sql, symbol);
 
   if (currentCount >= targetCount) {
     if (!latestRun) {
@@ -236,6 +243,7 @@ export async function ingestDerivHistoricalBatch(input: {
   symbols: string[];
   targetCount: number;
   resumeFromCheckpoint: boolean;
+  freshIngest?: boolean;
   concurrency: number;
 }) {
   const symbols = normalizeSymbols(input.symbols);
@@ -249,7 +257,9 @@ export async function ingestDerivHistoricalBatch(input: {
     const chunkResults = await Promise.all(chunk.map(async (symbol) => {
       try {
         let result: any;
-        if (input.resumeFromCheckpoint) {
+        if (input.freshIngest) {
+          result = await ingestDerivHistoricalTicks({ symbol, count: input.targetCount, resumeFromCheckpoint: false, freshIngest: true });
+        } else if (input.resumeFromCheckpoint) {
           result = await ingestDerivHistoricalBackfill({ symbol, targetCount: input.targetCount });
         } else {
           const checkpoint = await getHistoricalIngestionCheckpoint(symbol);

@@ -21,6 +21,7 @@ import {
   Activity,
   AlertTriangle,
   Zap,
+  RotateCcw,
 } from 'lucide-react';
 import { adminFetch } from '@/lib/admin-client-auth';
 
@@ -120,18 +121,22 @@ export default function MarketDataIngestionPage() {
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
   const [count, setCount] = useState('5000');
   const [resumeFromCheckpoint, setResumeFromCheckpoint] = useState(true);
+  const [freshIngestMode, setFreshIngestMode] = useState(false);
   const [recentRuns, setRecentRuns] = useState<IngestionRun[]>([]);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [purging, setPurging] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<'all' | '1s' | 'volatility' | 'jump' | 'forex_metals'>('all');
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearTarget, setClearTarget] = useState<'all' | 'failed'>('all');
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [purgeTarget, setPurgeTarget] = useState<{ symbol: string; name: string } | null>(null);
 
   const [symbolsLoading, setSymbolsLoading] = useState(true);
 
@@ -291,6 +296,39 @@ export default function MarketDataIngestionPage() {
     }
   }
 
+  async function handlePurgeTicks(targetSymbol: string, targetName?: string) {
+    setPurging(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await adminFetch('/api/admin/market-data/purge-ticks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: targetSymbol,
+          confirm: true,
+          reason: `admin_dashboard_purge_${targetSymbol.toLowerCase()}`,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || 'Failed to purge stored ticks.');
+      }
+
+      setMessage(
+        data.message ||
+          `Successfully purged ${data.deletedTicks?.toLocaleString() ?? 0} ticks and reset checkpoints for ${targetName || targetSymbol}.`
+      );
+      setShowPurgeModal(false);
+      setPurgeTarget(null);
+      await loadState(selectedSymbols);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to purge stored ticks from database.');
+    } finally {
+      setPurging(false);
+    }
+  }
+
   async function handleIngest() {
     if (!selectedSymbols.length) {
       setError('Select at least one asset.');
@@ -306,7 +344,8 @@ export default function MarketDataIngestionPage() {
         body: JSON.stringify({
           symbols: selectedSymbols,
           count: Number(count),
-          resumeFromCheckpoint,
+          resumeFromCheckpoint: freshIngestMode ? false : resumeFromCheckpoint,
+          freshIngest: freshIngestMode,
         }),
       });
       const data = await response.json();
@@ -323,7 +362,7 @@ export default function MarketDataIngestionPage() {
         const requested = Number(data.progress?.requested ?? data.requestedCount ?? Number(count));
         const percent = Number(data.progress?.percent ?? ((inserted / Math.max(1, requested)) * 100));
         setMessage(
-          `Backfill ${data.status === 'completed' ? 'completed' : 'in progress'}: ${inserted.toLocaleString()} / ${requested.toLocaleString()} real ticks stored (${Math.min(100, percent).toFixed(0)}%).`,
+          `${freshIngestMode ? 'Fresh Ingest' : 'Backfill'} ${data.status === 'completed' ? 'completed' : 'in progress'}: ${inserted.toLocaleString()} / ${requested.toLocaleString()} real ticks stored (${Math.min(100, percent).toFixed(0)}%).`,
         );
       }
       await loadState(selectedSymbols);
@@ -511,7 +550,7 @@ export default function MarketDataIngestionPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={selectAll}
@@ -528,6 +567,23 @@ export default function MarketDataIngestionPage() {
                   >
                     Deselect All
                   </button>
+                  {selectedSymbols.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPurgeTarget({
+                          symbol: selectedSymbols.join(','),
+                          name: `${selectedSymbols.length} Selected Asset${selectedSymbols.length === 1 ? '' : 's'} (${selectedSymbols.join(', ')})`,
+                        });
+                        setShowPurgeModal(true);
+                      }}
+                      disabled={submitting || purging}
+                      className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-500/20 transition disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Purge Selected ({selectedSymbols.length})
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -555,26 +611,45 @@ export default function MarketDataIngestionPage() {
                   filteredSymbols.map((asset) => {
                     const isSelected = selectedSymbols.includes(asset.symbol);
                     return (
-                      <label
+                      <div
                         key={asset.symbol}
-                        className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 text-xs transition select-none ${
+                        onClick={() => toggleSymbol(asset.symbol)}
+                        className={`flex cursor-pointer items-center justify-between gap-3 rounded-xl border p-3 text-xs transition select-none ${
                           isSelected
                             ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200 shadow-sm'
                             : 'border-white/5 bg-black/20 text-slate-300 hover:border-white/20 hover:bg-white/5'
                         }`}
                       >
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSymbol(asset.symbol)}
-                          disabled={submitting}
-                          className="h-4 w-4 accent-cyan-400 rounded"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <span className="block truncate font-bold text-slate-200">{asset.displayName}</span>
-                          <span className="block text-[10px] text-slate-500 font-mono">{asset.symbol}</span>
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}}
+                            disabled={submitting}
+                            className="h-4 w-4 accent-cyan-400 rounded flex-shrink-0"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <span className="block truncate font-bold text-slate-200">{asset.displayName}</span>
+                            <span className="block text-[10px] text-slate-500 font-mono">{asset.symbol}</span>
+                          </div>
                         </div>
-                      </label>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setPurgeTarget({ symbol: asset.symbol, name: asset.displayName });
+                            setShowPurgeModal(true);
+                          }}
+                          disabled={submitting || purging}
+                          title={`Purge stored ticks for ${asset.displayName} from database`}
+                          className="p-1.5 rounded-lg border border-red-500/20 bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300 transition text-[10px] font-semibold flex items-center gap-1 flex-shrink-0"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          <span className="hidden sm:inline">Purge</span>
+                        </button>
+                      </div>
                     );
                   })
                 )}
@@ -629,32 +704,100 @@ export default function MarketDataIngestionPage() {
               </div>
             </div>
 
-            {/* Checkpoint Toggle */}
-            <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-white/10 bg-black/20 p-4 text-xs text-slate-300 hover:bg-black/30 transition">
-              <input
-                type="checkbox"
-                checked={resumeFromCheckpoint}
-                onChange={(e) => setResumeFromCheckpoint(e.target.checked)}
-                className="h-4 w-4 accent-cyan-400 rounded"
-              />
-              <div>
-                <span className="font-bold text-slate-200 block">Resume each asset from its saved checkpoint</span>
-                <span className="text-slate-400 block text-[11px] mt-0.5">
-                  Avoids duplicate fetches and continues historical backfills backward in time seamlessly.
-                </span>
+            {/* Ingestion Mode Segmented Choice */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-400">
+                Ingestion Mode
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFreshIngestMode(false);
+                    setResumeFromCheckpoint(true);
+                  }}
+                  className={`p-4 rounded-2xl border text-left transition flex items-start gap-3 ${
+                    !freshIngestMode
+                      ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200 shadow-sm'
+                      : 'border-white/10 bg-black/20 text-slate-400 hover:border-white/20 hover:bg-black/30'
+                  }`}
+                >
+                  <CheckCircle2
+                    className={`h-5 w-5 mt-0.5 flex-shrink-0 ${!freshIngestMode ? 'text-cyan-400' : 'text-slate-500'}`}
+                  />
+                  <div>
+                    <span className="block font-bold text-xs text-slate-200">Incremental Backfill</span>
+                    <span className="block text-[11px] text-slate-400 mt-0.5">
+                      Resumes from checkpoint and steps backward without re-fetching existing ticks.
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFreshIngestMode(true);
+                    setResumeFromCheckpoint(false);
+                  }}
+                  className={`p-4 rounded-2xl border text-left transition flex items-start gap-3 ${
+                    freshIngestMode
+                      ? 'border-amber-400/40 bg-amber-400/10 text-amber-200 shadow-sm'
+                      : 'border-white/10 bg-black/20 text-slate-400 hover:border-white/20 hover:bg-black/30'
+                  }`}
+                >
+                  <RotateCcw
+                    className={`h-5 w-5 mt-0.5 flex-shrink-0 ${freshIngestMode ? 'text-amber-400' : 'text-slate-500'}`}
+                  />
+                  <div>
+                    <span className="block font-bold text-xs text-slate-200">Fresh Ingest (Auto-Purge)</span>
+                    <span className="block text-[11px] text-slate-400 mt-0.5">
+                      Automatically deletes stored ticks for selected assets in the database before starting.
+                    </span>
+                  </div>
+                </button>
               </div>
-            </label>
+            </div>
+
+            {/* Checkpoint Checkbox (only when not in fresh ingest mode) */}
+            {!freshIngestMode && (
+              <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-white/10 bg-black/20 p-4 text-xs text-slate-300 hover:bg-black/30 transition">
+                <input
+                  type="checkbox"
+                  checked={resumeFromCheckpoint}
+                  onChange={(e) => setResumeFromCheckpoint(e.target.checked)}
+                  className="h-4 w-4 accent-cyan-400 rounded"
+                />
+                <div>
+                  <span className="font-bold text-slate-200 block">Resume each asset from its saved checkpoint</span>
+                  <span className="text-slate-400 block text-[11px] mt-0.5">
+                    Avoids duplicate fetches and continues historical backfills backward in time seamlessly.
+                  </span>
+                </div>
+              </label>
+            )}
 
             {/* Submit CTA */}
             <div className="flex flex-wrap items-center gap-3 pt-2">
               <button
                 onClick={handleIngest}
                 disabled={submitting || !selectedSymbols.length}
-                className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-6 py-3.5 text-sm font-bold text-slate-950 transition hover:opacity-95 shadow-lg shadow-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                className={`inline-flex items-center gap-2 rounded-2xl px-6 py-3.5 text-sm font-bold text-slate-950 transition hover:opacity-95 shadow-lg disabled:cursor-not-allowed disabled:opacity-50 ${
+                  freshIngestMode
+                    ? 'bg-gradient-to-r from-amber-400 to-orange-500 shadow-amber-500/20'
+                    : 'bg-gradient-to-r from-cyan-400 to-blue-500 shadow-cyan-500/20'
+                }`}
               >
-                {submitting ? <Loader2 className="h-5 w-5 animate-spin" /> : <DatabaseZap className="h-5 w-5" />}
+                {submitting ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : freshIngestMode ? (
+                  <RotateCcw className="h-5 w-5" />
+                ) : (
+                  <DatabaseZap className="h-5 w-5" />
+                )}
                 {submitting
                   ? `Ingesting ${selectedSymbols.length} Asset${selectedSymbols.length === 1 ? '' : 's'}…`
+                  : freshIngestMode
+                  ? `Start Fresh Ingest (${selectedSymbols.length} Selected)`
                   : `Start Ingestion (${selectedSymbols.length} Selected)`}
               </button>
               <span className="text-xs text-slate-400">
@@ -705,6 +848,22 @@ export default function MarketDataIngestionPage() {
                         <span>{new Date(checkpoint.updatedAt).toLocaleTimeString()}</span>
                       </div>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPurgeTarget({
+                          symbol: checkpoint.symbol,
+                          name: getHumanReadableAssetName(checkpoint.symbol),
+                        });
+                        setShowPurgeModal(true);
+                      }}
+                      disabled={submitting || purging}
+                      className="w-full mt-2 inline-flex items-center justify-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/10 py-1.5 text-[11px] font-semibold text-red-300 hover:bg-red-500/20 transition"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      Purge Stored Ticks
+                    </button>
                   </div>
                 ))}
               </div>
@@ -951,6 +1110,62 @@ export default function MarketDataIngestionPage() {
             </div>
           )}
         </section>
+        {/* Purge Ticks Confirmation Modal */}
+        {showPurgeModal && purgeTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="w-full max-w-lg rounded-3xl border border-red-500/30 bg-[#0d1017] p-6 shadow-2xl space-y-5">
+              <div className="flex items-start gap-4">
+                <div className="p-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 flex-shrink-0">
+                  <AlertTriangle className="h-6 w-6" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-lg font-bold text-slate-100">
+                    Confirm Permanent Tick Deletion
+                  </h3>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    You are about to permanently purge all raw tick records from the database table (<span className="text-cyan-300 font-mono">market_ticks</span>) and reset the ingestion checkpoint for:
+                  </p>
+                  <div className="mt-2 p-2.5 rounded-xl bg-black/40 border border-white/5 font-mono text-xs text-amber-300">
+                    {purgeTarget.name} ({purgeTarget.symbol})
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-red-500/20 bg-red-950/30 p-3.5 text-xs text-red-200 space-y-1.5">
+                <span className="font-bold block flex items-center gap-1.5">
+                  <ShieldAlert className="h-4 w-4 text-red-400" />
+                  Database Clearance Warning:
+                </span>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  This operation directly deletes all stored ticks from your connected <span className="font-mono text-cyan-300">DATABASE_URL</span> and clears corresponding checkpoint entries. This action cannot be undone.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPurgeModal(false);
+                    setPurgeTarget(null);
+                  }}
+                  disabled={purging}
+                  className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-white/10 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePurgeTicks(purgeTarget.symbol, purgeTarget.name)}
+                  disabled={purging}
+                  className="inline-flex items-center gap-2 rounded-xl bg-red-500 px-5 py-2 text-xs font-bold text-white hover:bg-red-600 transition shadow-lg shadow-red-500/20 disabled:opacity-50"
+                >
+                  {purging ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  {purging ? 'Purging from Database…' : 'Confirm Permanent Purge'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );

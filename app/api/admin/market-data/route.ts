@@ -55,20 +55,27 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const symbols = normalizeSymbols(body?.symbols ?? body?.symbol);
     const count = Number(body?.count ?? 5000);
-    const resumeFromCheckpoint = Boolean(body?.resumeFromCheckpoint);
+    const freshIngest = Boolean(body?.freshIngest ?? body?.fresh ?? (body?.mode === 'fresh'));
+    const resumeFromCheckpoint = freshIngest ? false : Boolean(body?.resumeFromCheckpoint);
 
     if (!symbols.length) return NextResponse.json({ success: false, error: 'Select at least one valid Deriv asset.' }, { status: 400, headers: jsonHeaders() });
     if (config.maxAssets !== null && symbols.length > config.maxAssets) return NextResponse.json({ success: false, error: `A maximum of ${config.maxAssets} assets can be ingested in one batch.` }, { status: 422, headers: jsonHeaders() });
     if (!Number.isFinite(count) || count < 50 || count > 50000) return NextResponse.json({ success: false, error: 'Count must be between 50 and 50000.' }, { status: 400, headers: jsonHeaders() });
 
     if (symbols.length > 1) {
-      const result = await ingestDerivHistoricalBatch({ symbols, targetCount: count, resumeFromCheckpoint, concurrency: config.concurrency });
+      const result = await ingestDerivHistoricalBatch({ symbols, targetCount: count, resumeFromCheckpoint, freshIngest, concurrency: config.concurrency });
       return NextResponse.json({ ...result, runtime: config, realDataOnly: true, syntheticDataDisabled: true }, { status: result.failedAssets === symbols.length ? 500 : 200, headers: jsonHeaders() });
     }
 
     const symbol = symbols[0];
+    if (freshIngest) {
+      const result = await ingestDerivHistoricalTicks({ symbol, count, resumeFromCheckpoint: false, freshIngest: true });
+      const { success: _ignoredSuccess, ...ingestionResult } = result as typeof result & { success?: unknown };
+      return NextResponse.json({ success: true, ...ingestionResult, runtime: config, freshIngest: true, realDataOnly: true, syntheticDataDisabled: true }, { headers: jsonHeaders() });
+    }
+
     if (resumeFromCheckpoint) {
-      const result = await ingestDerivHistoricalBackfill({ symbol, targetCount: count });
+      const result = await ingestDerivHistoricalBackfill({ symbol, targetCount: count, freshIngest: false });
       return NextResponse.json({ success: true, ...result, runtime: config, realDataOnly: true, syntheticDataDisabled: true }, { headers: jsonHeaders() });
     }
 

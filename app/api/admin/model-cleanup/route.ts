@@ -90,8 +90,50 @@ export async function POST(req: NextRequest) {
     }
 
     const modelIds = normalizeIds(body.modelIds);
+    const purgeAllCandidates = body.purgeAllCandidates === true;
+
+    if (purgeAllCandidates) {
+      // Find all candidate & staging models
+      const eligibleRows = await sql`
+        SELECT model_id FROM ml_model_registry_v2
+        WHERE LOWER(status) IN ('candidate', 'staging')
+      `;
+
+      if (!eligibleRows.length) {
+        return NextResponse.json({ success: true, message: 'No candidate or staging models found to clean.', deletedCount: 0 });
+      }
+
+      const allCandidateIds = eligibleRows.map((r: any) => String(r.model_id));
+
+      if (force) {
+        await sql`DELETE FROM ops_model_selection_events WHERE selected_model_id = ANY(${allCandidateIds})`;
+      } else {
+        await sql`DELETE FROM ops_model_selection_events WHERE selected_model_id = ANY(${allCandidateIds})`;
+      }
+
+      const deleted = await sql`
+        DELETE FROM ml_model_registry_v2
+        WHERE LOWER(status) IN ('candidate', 'staging')
+        RETURNING model_id
+      `;
+
+      // Log bulk audit event
+      await sql`
+        INSERT INTO ops_audit_events (category, severity, actor, action, resource_type, resource_id, metadata)
+        VALUES ('model_operations', 'warning', 'admin', 'admin_bulk_candidate_purge', 'ml_model_registry_v2', 'bulk', ${JSON.stringify({ count: deleted.length })})
+      `;
+
+      return NextResponse.json({
+        success: true,
+        message: `Successfully purged all ${deleted.length} candidate/staging models.`,
+        deletedCount: deleted.length,
+        preservedTrainingHistory: true,
+        externalArtifactsDeleted: false
+      });
+    }
+
     if (!modelIds.length) return NextResponse.json({ success: false, error: 'At least one modelId is required.' }, { status: 400 });
-    if (modelIds.length > 100) return NextResponse.json({ success: false, error: 'A maximum of 100 models may be cleaned in one operation.' }, { status: 400 });
+    if (modelIds.length > 5000) return NextResponse.json({ success: false, error: 'A maximum of 5,000 models may be cleaned in one operation.' }, { status: 400 });
 
     const rows = await sql`SELECT model_id, status, asset_symbol, horizon_ticks, training_run_id FROM ml_model_registry_v2 WHERE model_id = ANY(${modelIds})`;
     if (rows.length !== modelIds.length) {
