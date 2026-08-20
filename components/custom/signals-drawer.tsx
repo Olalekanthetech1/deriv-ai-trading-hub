@@ -70,7 +70,6 @@ export function SignalsDrawer({ isOpen, onClose, activeSymbol, signals, consensu
   };
 
   useEffect(() => { if (isOpen && activeTab === 'multimodel') void fetchEnsembleData(); }, [isOpen, activeTab, activeSymbol, consensusDuration]);
-  if (!isOpen) return null;
 
   const durationOptions = useMemo(() => {
     const unique = new Map<string, { id: string; label: string }>();
@@ -80,6 +79,8 @@ export function SignalsDrawer({ isOpen, onClose, activeSymbol, signals, consensu
     }
     return [{ id: 'ALL', label: 'All Live Durations' }, ...Array.from(unique.values()).sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))];
   }, [signals]);
+
+  if (!isOpen) return null;
 
   const visibleSignals = selectedDurationFilter === 'ALL' ? signals : signals.filter((signal) => {
     const unit = selectedDurationFilter.replace(/[0-9]/g, '');
