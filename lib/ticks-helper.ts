@@ -4,11 +4,17 @@ import { openDerivPublicWebSocket } from '@/lib/deriv-public-websocket';
 
 export type TickPoint = { price: number; timestamp: number };
 
-export async function fetchDerivTickHistory(
+const inFlightTickHistory = new Map<string, Promise<TickPoint[]>>();
+
+function buildTickHistoryFlightKey(symbol: string, count: number, end: number | 'latest'): string {
+  return `${symbol.trim().toUpperCase()}:${count}:${String(end)}`;
+}
+
+async function fetchDerivTickHistoryUncoalesced(
   symbol: string,
-  count: number = 1000,
-  end: number | 'latest' = 'latest',
-  retries = 2,
+  count: number,
+  end: number | 'latest',
+  retries: number,
 ): Promise<TickPoint[]> {
   let attempt = 0;
   let lastError: Error | null = null;
@@ -83,6 +89,30 @@ export async function fetchDerivTickHistory(
   }
 
   throw lastError || new Error(`Deriv tick history failed for ${symbol}.`);
+}
+
+export async function fetchDerivTickHistory(
+  symbol: string,
+  count: number = 1000,
+  end: number | 'latest' = 'latest',
+  retries = 2,
+): Promise<TickPoint[]> {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  if (!normalizedSymbol) throw new Error('TICK_SYMBOL_REQUIRED');
+  if (!Number.isInteger(count) || count <= 0) throw new Error('TICK_HISTORY_COUNT_INVALID');
+  if (!Number.isInteger(retries) || retries < 0) throw new Error('TICK_HISTORY_RETRIES_INVALID');
+
+  const key = buildTickHistoryFlightKey(normalizedSymbol, count, end);
+  const existing = inFlightTickHistory.get(key);
+  if (existing) return existing;
+
+  const request = fetchDerivTickHistoryUncoalesced(normalizedSymbol, count, end, retries);
+  inFlightTickHistory.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (inFlightTickHistory.get(key) === request) inFlightTickHistory.delete(key);
+  }
 }
 
 export async function ensureMinTicks(symbol: string, minRequired: number = 100, forceDerivFetch = false) {
