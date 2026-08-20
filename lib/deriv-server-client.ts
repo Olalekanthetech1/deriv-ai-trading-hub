@@ -226,7 +226,7 @@ export class DerivAuthenticatedClient {
   }
 
   async getProposal(params: { symbol: string; contract_type: 'CALL' | 'PUT'; amount: number; currency: string; duration: number; duration_unit: string }): Promise<DerivProposalResponse['proposal']> {
-    const res = await this.send<{ proposal: any }>({ proposal: 1, amount: params.amount, basis: 'stake', contract_type: params.contract_type, currency: params.currency, duration: params.duration, duration_unit: params.duration_unit, symbol: params.symbol });
+    const res = await this.send<{ proposal: any }>({ proposal: 1, amount: params.amount, basis: 'stake', contract_type: params.contract_type, currency: params.currency, duration: params.duration, duration_unit: params.duration_unit, underlying_symbol: params.symbol });
     return res.proposal;
   }
 

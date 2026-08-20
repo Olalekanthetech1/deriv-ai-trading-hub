@@ -46,7 +46,7 @@ export class ProposalSubmissionManager {
           basis: params.basis,
           contract_type: params.contractType,
           currency: params.currency,
-          symbol: params.symbol,
+          underlying_symbol: params.symbol,
           ...(params.dateExpiry !== undefined
             ? { date_expiry: params.dateExpiry }
             : {
