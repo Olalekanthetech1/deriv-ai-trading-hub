@@ -169,6 +169,7 @@ async function main() {
   }
 
   console.log('\n=== GOVERNED PILOT PASSED ALL VERIFICATION CHECKS ===');
+  process.exit(0);
 }
 
 main().catch((err) => {

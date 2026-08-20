@@ -167,13 +167,25 @@ def mean(arr: Any) -> float:
     return sum(flat) / len(flat) if flat else 0.0
 
 
-def sum_arr(arr: Any) -> float:
+builtins_sum = sum
+
+
+def sum(arr: Any) -> float:
     if isinstance(arr, PureArray):
         data = arr.tolist()
     else:
         data = arr
-    flat = _flatten(data)
-    return float(sum(flat))
+    if isinstance(data, (list, tuple)):
+        flat = _flatten(data)
+        return float(builtins_sum(flat))
+    try:
+        return float(builtins_sum(data))
+    except Exception:
+        flat = _flatten(data)
+        return float(builtins_sum(flat))
+
+
+sum_arr = sum
 
 
 def argmax(arr: Any, axis: int | None = None) -> Any:
@@ -338,11 +350,10 @@ class PureDecisionTree:
                 right_r = [residuals[i] for i in range(n_samples) if X[i][f] > thresh]
                 if not left_r or not right_r:
                     continue
-                # Variance reduction gain
-                var_total = sum((r - mean_val) ** 2 for r in residuals)
-                var_left = sum((r - (sum(left_r) / len(left_r))) ** 2 for r in left_r)
-                var_right = sum((r - (sum(right_r) / len(right_r))) ** 2 for r in right_r)
-                gain = var_total - (var_left + var_right)
+                # Mathematically identical fast split gain
+                sum_left = builtins_sum(left_r)
+                sum_right = builtins_sum(right_r)
+                gain = (sum_left ** 2 / len(left_r)) + (sum_right ** 2 / len(right_r))
                 if gain > best_gain:
                     best_gain = gain
                     best_feature = f

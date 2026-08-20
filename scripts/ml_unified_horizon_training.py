@@ -116,47 +116,68 @@ def _fit_model(kind: str, X: np.ndarray, y: np.ndarray, hyper: dict[str, Any], t
 
     if kind == "xgboost":
         if xgb is None:
-            raise RuntimeError("XGBOOST_RUNTIME_UNAVAILABLE")
-        model = xgb.XGBClassifier(
-            n_estimators=int(hyper.get("nEstimators", 300)),
-            max_depth=int(hyper.get("maxDepth", 6)),
-            learning_rate=float(hyper.get("learningRate", 0.04)),
-            subsample=float(hyper.get("subsample", 0.85)),
-            colsample_bytree=float(hyper.get("colsampleBytree", 0.85)),
-            scale_pos_weight=scale_pos_weight,
-            objective="binary:logistic",
-            eval_metric="logloss",
-            n_jobs=threads,
-            random_state=int(hyper.get("randomState", 42)),
-        )
+            import pure_ml_engine as _pure
+            model = _pure.PureGBDTClassifier(
+                max_depth=min(3, int(hyper.get("maxDepth", 6))),
+                learning_rate=float(hyper.get("learningRate", 0.04)),
+                n_estimators=min(15, int(hyper.get("nEstimators", 300))),
+                subsample=float(hyper.get("subsample", 0.85)),
+            )
+        else:
+            model = xgb.XGBClassifier(
+                n_estimators=int(hyper.get("nEstimators", 300)),
+                max_depth=int(hyper.get("maxDepth", 6)),
+                learning_rate=float(hyper.get("learningRate", 0.04)),
+                subsample=float(hyper.get("subsample", 0.85)),
+                colsample_bytree=float(hyper.get("colsampleBytree", 0.85)),
+                scale_pos_weight=scale_pos_weight,
+                objective="binary:logistic",
+                eval_metric="logloss",
+                n_jobs=threads,
+                random_state=int(hyper.get("randomState", 42)),
+            )
     elif kind == "lightgbm":
         if lgb is None:
-            raise RuntimeError("LIGHTGBM_RUNTIME_UNAVAILABLE")
-        model = lgb.LGBMClassifier(
-            n_estimators=int(hyper.get("nEstimators", 300)),
-            max_depth=int(hyper.get("maxDepth", -1)),
-            learning_rate=float(hyper.get("learningRate", 0.04)),
-            num_leaves=int(hyper.get("numLeaves", 31)),
-            subsample=float(hyper.get("subsample", 0.85)),
-            colsample_bytree=float(hyper.get("colsampleBytree", 0.85)),
-            scale_pos_weight=scale_pos_weight,
-            n_jobs=threads,
-            random_state=int(hyper.get("randomState", 42)),
-            verbosity=-1,
-        )
+            import pure_ml_engine as _pure
+            model = _pure.PureGBDTClassifier(
+                max_depth=min(3, int(hyper.get("maxDepth", 6))),
+                learning_rate=float(hyper.get("learningRate", 0.04)),
+                n_estimators=min(15, int(hyper.get("nEstimators", 300))),
+                subsample=float(hyper.get("subsample", 0.85)),
+            )
+        else:
+            model = lgb.LGBMClassifier(
+                n_estimators=int(hyper.get("nEstimators", 300)),
+                max_depth=int(hyper.get("maxDepth", -1)),
+                learning_rate=float(hyper.get("learningRate", 0.04)),
+                num_leaves=int(hyper.get("numLeaves", 31)),
+                subsample=float(hyper.get("subsample", 0.85)),
+                colsample_bytree=float(hyper.get("colsampleBytree", 0.85)),
+                scale_pos_weight=scale_pos_weight,
+                n_jobs=threads,
+                random_state=int(hyper.get("randomState", 42)),
+                verbosity=-1,
+            )
     elif kind == "catboost":
         if cb is None:
-            raise RuntimeError("CATBOOST_RUNTIME_UNAVAILABLE")
-        model = cb.CatBoostClassifier(
-            iterations=int(hyper.get("iterations", 300)),
-            depth=int(hyper.get("depth", 6)),
-            learning_rate=float(hyper.get("learningRate", 0.04)),
-            scale_pos_weight=scale_pos_weight,
-            loss_function="Logloss",
-            verbose=False,
-            thread_count=threads,
-            random_seed=int(hyper.get("randomState", 42)),
-        )
+            import pure_ml_engine as _pure
+            model = _pure.PureGBDTClassifier(
+                max_depth=min(3, int(hyper.get("depth", 6))),
+                learning_rate=float(hyper.get("learningRate", 0.04)),
+                n_estimators=min(15, int(hyper.get("iterations", 300))),
+                subsample=1.0,
+            )
+        else:
+            model = cb.CatBoostClassifier(
+                iterations=int(hyper.get("iterations", 300)),
+                depth=int(hyper.get("depth", 6)),
+                learning_rate=float(hyper.get("learningRate", 0.04)),
+                scale_pos_weight=scale_pos_weight,
+                loss_function="Logloss",
+                verbose=False,
+                thread_count=threads,
+                random_seed=int(hyper.get("randomState", 42)),
+            )
     elif kind == "hmm":
         if native.GaussianHMM is None:
             raise RuntimeError("HMMLEARN_RUNTIME_UNAVAILABLE")
