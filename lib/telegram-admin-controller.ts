@@ -18,10 +18,30 @@ function markdownToHtml(md: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  const codes: string[] = [];
+  html = html.replace(/`([^`]+)`/g, (match, p1) => {
+    codes.push(p1);
+    return `__CODE_${codes.length - 1}__`;
+  });
+
+  const links: {text: string, url: string}[] = [];
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, p1, p2) => {
+    links.push({text: p1, url: p2});
+    return `__LINK_${links.length - 1}__`;
+  });
+
   html = html.replace(/\*([^*]+)\*/g, '<b>$1</b>');
-  html = html.replace(/_([^_]+)_/g, '<i>$1</i>');
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  html = html.replace(/(^|\W)_([^_]+)_(?!\w)/g, '$1<i>$2</i>');
+
+  html = html.replace(/__LINK_(\d+)__/g, (match, p1) => {
+    const link = links[parseInt(p1, 10)];
+    return `<a href="${link.url}">${link.text}</a>`;
+  });
+
+  html = html.replace(/__CODE_(\d+)__/g, (match, p1) => {
+    return `<code>${codes[parseInt(p1, 10)]}</code>`;
+  });
+
   return html;
 }
 
@@ -148,9 +168,13 @@ export class TelegramAdminController {
       try {
         const sql = neon(dbUrl);
         const rows = await sql`
-          SELECT model_id, status, COALESCE(calibrated_brier_score, 0) as brier_score, COALESCE(walkforward_win_rate, 0) as win_rate
+          SELECT 
+            model_id, 
+            status, 
+            COALESCE((metrics->>'calibrated_brier_score')::numeric, 0) as brier_score, 
+            COALESCE((metrics->>'walkforward_win_rate')::numeric, 0) as win_rate
           FROM ml_model_registry_v2
-          ORDER BY created_at DESC
+          ORDER BY updated_at DESC
           LIMIT 5
         `;
         modelRows = rows as typeof modelRows;
@@ -214,9 +238,15 @@ export class TelegramAdminController {
       try {
         const sql = neon(dbUrl);
         const rows = await sql`
-          SELECT execution_plan_id, symbol, COALESCE(handshake_latency_ms, 0) as handshake_latency_ms, COALESCE(buy_latency_ms, 0) as buy_latency_ms, COALESCE(contract_id, 'N/A') as contract_id, created_at
+          SELECT 
+            execution_plan_id, 
+            asset_symbol as symbol, 
+            COALESCE((metadata->>'handshake_latency_ms')::numeric, 0) as handshake_latency_ms, 
+            COALESCE((metadata->>'buy_latency_ms')::numeric, 0) as buy_latency_ms, 
+            COALESCE(metadata->>'contract_id', 'N/A') as contract_id, 
+            executed_at as created_at
           FROM execution_trades
-          ORDER BY created_at DESC
+          ORDER BY executed_at DESC
           LIMIT 5
         `;
         trades = rows as typeof trades;
