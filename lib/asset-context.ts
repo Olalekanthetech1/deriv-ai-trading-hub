@@ -76,10 +76,10 @@ function normalizeText(value: unknown): string {
 function inferAssetCategory(symbol: string, assetCategory?: number | null): number {
   if (Number.isFinite(assetCategory)) return Math.max(0, Math.min(3, Number(assetCategory)));
   const text = symbol.toUpperCase();
+  if (/(XAU|XAG|XPD|XPT|BRO|OIL|WTI|BRENT|COM|GOLD|SILVER|NATGAS)/.test(text)) return 2;
+  if (/(BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB|CRY)/.test(text)) return 3;
   if (/^(FRX|FX)/.test(text) || /(USD|EUR|GBP|JPY|CHF|AUD|CAD|NZD)/.test(text)) return 1;
-  if (/^(R_|1HZ|2HZ|3HZ|4HZ|5HZ|6HZ|7HZ|8HZ|9HZ|10HZ)/.test(text)) return 0;
-  if (/(XAU|XAG|OIL|WTI|BRENT|COM|GOLD|SILVER|NATGAS)/.test(text)) return 2;
-  if (/(BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB)/.test(text)) return 3;
+  if (/^(R_|1HZ|2HZ|3HZ|4HZ|5HZ|6HZ|7HZ|8HZ|9HZ|10HZ|STP|STEP|BOOM|CRASH|JD)/.test(text)) return 0;
   return 0;
 }
 
@@ -89,10 +89,10 @@ function inferAssetClass(symbol: string, category: number, assetClass?: string |
     return normalized;
   }
   const text = symbol.toUpperCase();
+  if (category === 2 || /(XAU|XAG|XPD|XPT|BRO|OIL|WTI|BRENT|COM|GOLD|SILVER|NATGAS)/.test(text)) return 'commodity';
+  if (category === 3 || /(BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB|CRY)/.test(text)) return 'crypto';
   if (category === 1 || /^(FRX|FX)/.test(text) || /(USD|EUR|GBP|JPY|CHF|AUD|CAD|NZD)/.test(text)) return 'forex';
-  if (category === 2 || /(XAU|XAG|OIL|WTI|BRENT|COM|GOLD|SILVER|NATGAS)/.test(text)) return 'commodity';
-  if (category === 3 || /(BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB)/.test(text)) return 'crypto';
-  if (/^(R_|1HZ|2HZ|3HZ|4HZ|5HZ|6HZ|7HZ|8HZ|9HZ|10HZ)/.test(text)) return 'synthetic';
+  if (/^(R_|1HZ|2HZ|3HZ|4HZ|5HZ|6HZ|7HZ|8HZ|9HZ|10HZ|STP|STEP|BOOM|CRASH|JD)/.test(text)) return 'synthetic';
   if (/INDEX|VOLATILITY|CWM|IDX/.test(text)) return 'index';
   return 'unknown';
 }
@@ -101,9 +101,9 @@ function inferMarketType(symbol: string, marketType?: string | null): MarketType
   const normalized = normalizeText(marketType);
   if (normalized === 'synthetic' || normalized === 'spot' || normalized === 'cfd' || normalized === 'options') return normalized;
   const text = symbol.toUpperCase();
-  if (/^(R_|1HZ|2HZ|3HZ|4HZ|5HZ|6HZ|7HZ|8HZ|9HZ|10HZ)/.test(text)) return 'synthetic';
+  if (/(XAU|XAG|XPD|XPT|BRO|OIL|WTI|BRENT|COM|INDEX|VOLATILITY|CWM|IDX)/.test(text)) return 'cfd';
+  if (/^(R_|1HZ|2HZ|3HZ|4HZ|5HZ|6HZ|7HZ|8HZ|9HZ|10HZ|STP|STEP|BOOM|CRASH|JD)/.test(text)) return 'synthetic';
   if (/(FRX|FX|BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB)/.test(text)) return 'spot';
-  if (/(XAU|XAG|OIL|WTI|BRENT|COM|INDEX|VOLATILITY|CWM|IDX)/.test(text)) return 'cfd';
   return 'unknown';
 }
 

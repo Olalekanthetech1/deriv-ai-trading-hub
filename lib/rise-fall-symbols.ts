@@ -90,16 +90,29 @@ function deriveCategoryKeys(item: any, symbol: string): string[] {
   const categories = new Set<string>();
 
   if (market === 'synthetic_index') categories.add('synthetic');
-  if (market === 'forex' || submarket === 'major_pairs') categories.add('forex');
-  if (submarket === 'major_pairs') categories.add('forex_major');
+  if (market === 'forex' || submarket === 'major_pairs' || submarket === 'minor_pairs' || (upperSymbol.startsWith('FRX') && !/(XAU|XAG|XPD|XPT|BRO)/i.test(symbol))) {
+    categories.add('forex');
+    if (submarket === 'major_pairs') categories.add('forex_major');
+  }
+
+  if (market === 'commodities' || market === 'commodity' || submarket === 'metals' || submarket === 'energy' || /(XAU|XAG|XPD|XPT|BRO)/i.test(symbol)) {
+    categories.add('commodities');
+    categories.add('metals');
+  }
 
   if (submarket === 'random_index') {
     categories.add('volatility');
     categories.add(upperSymbol.startsWith('1HZ') ? 'volatility_1s' : 'volatility_standard');
   }
-  if (submarket === 'step_index') categories.add('step');
+  if (submarket === 'step_index' || upperSymbol.startsWith('STP')) {
+    categories.add('step');
+    categories.add('synthetic');
+  }
   if (submarket === 'jump_index') categories.add('jump');
   if (submarket === 'crash_index') categories.add('crash_boom');
+  if (market === 'cryptocurrency' || market === 'crypto' || upperSymbol.startsWith('CRY')) {
+    categories.add('crypto');
+  }
 
   return [...categories];
 }

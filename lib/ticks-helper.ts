@@ -1,13 +1,15 @@
 import { saveTicksBatch, getTicksHistory, initDbSchema } from '@/lib/db';
 import WebSocket from 'ws';
 import { openDerivPublicWebSocket } from '@/lib/deriv-public-websocket';
+import { canonicalizeDerivSymbol } from '@/lib/deriv-symbol-utils';
 
 export type TickPoint = { price: number; timestamp: number };
 
 const inFlightTickHistory = new Map<string, Promise<TickPoint[]>>();
 
 function buildTickHistoryFlightKey(symbol: string, count: number, end: number | 'latest'): string {
-  return `${symbol.trim().toUpperCase()}:${count}:${String(end)}`;
+  const canonical = canonicalizeDerivSymbol(symbol);
+  return `${canonical}:${count}:${String(end)}`;
 }
 
 async function fetchDerivTickHistoryUncoalesced(
@@ -123,7 +125,7 @@ export async function fetchDerivTickHistory(
   end: number | 'latest' = 'latest',
   retries = 2,
 ): Promise<TickPoint[]> {
-  const normalizedSymbol = symbol.trim().toUpperCase();
+  const normalizedSymbol = canonicalizeDerivSymbol(symbol);
   if (!normalizedSymbol) throw new Error('TICK_SYMBOL_REQUIRED');
   if (!Number.isInteger(count) || count <= 0) throw new Error('TICK_HISTORY_COUNT_INVALID');
   if (!Number.isInteger(retries) || retries < 0) throw new Error('TICK_HISTORY_RETRIES_INVALID');

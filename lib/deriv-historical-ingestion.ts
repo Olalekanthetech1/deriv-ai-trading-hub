@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { neon } from '@neondatabase/serverless';
 import { getDbConnectionString, initDbSchema } from '@/lib/db';
 import { fetchDerivTickHistory, type TickPoint } from '@/lib/ticks-helper';
+import { canonicalizeDerivSymbol, isValidDerivSymbol } from '@/lib/deriv-symbol-utils';
 
 type Sql = any;
 
@@ -52,11 +53,11 @@ export type HistoricalCheckpoint = {
 };
 
 function normalizeSymbol(symbol: string): string {
-  return symbol.trim().toUpperCase();
+  return canonicalizeDerivSymbol(symbol);
 }
 
 function isValidSymbol(symbol: string): boolean {
-  return /^[A-Z0-9_./:-]{2,64}$/.test(symbol);
+  return isValidDerivSymbol(symbol);
 }
 
 function makeSourceTickId(symbol: string, epochMs: number, price: number, index: number): string {

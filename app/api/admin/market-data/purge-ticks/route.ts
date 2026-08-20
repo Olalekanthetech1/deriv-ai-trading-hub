@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { purgeMarketTicksForSymbol } from '@/lib/deriv-historical-ingestion';
+import { canonicalizeDerivSymbol, isValidDerivSymbol } from '@/lib/deriv-symbol-utils';
 import { verifySessionToken } from '@/app/api/admin/auth/route';
 
 function isAuthorized(req: NextRequest): boolean {
@@ -24,7 +25,9 @@ function jsonHeaders() {
 
 function normalizeSymbol(symbol: unknown): string {
   if (typeof symbol !== 'string') return '';
-  return symbol.trim().toUpperCase();
+  const trimmed = symbol.trim();
+  if (trimmed.toUpperCase() === 'ALL' || trimmed === '*') return 'ALL';
+  return canonicalizeDerivSymbol(trimmed);
 }
 
 function normalizeSymbols(value: unknown): string[] {

@@ -32,6 +32,7 @@ type LiveSymbol = {
   submarket: string;
   isOpen: boolean;
   isAvailable: boolean;
+  categoryKeys?: string[];
 };
 
 type IngestionRun = {
@@ -77,10 +78,22 @@ const POPULAR_PRESETS = [
     symbols: ['R_10', 'R_25', 'R_50', 'R_75', 'R_100'],
   },
   {
+    id: 'step_indices',
+    label: 'Step Indices',
+    description: 'stpRNG to stpRNG5 (Step rate ticks)',
+    symbols: ['stpRNG', 'stpRNG2', 'stpRNG3', 'stpRNG4', 'stpRNG5'],
+  },
+  {
     id: 'jump_indices',
     label: 'Jump Indices',
     description: 'JD10 to JD100 (Rise/Fall supported)',
     symbols: ['JD10', 'JD25', 'JD50', 'JD75', 'JD100'],
+  },
+  {
+    id: 'forex_metals',
+    label: 'Forex & Metals',
+    description: 'EUR/USD, GBP/USD, Gold & Silver',
+    symbols: ['frxEURUSD', 'frxGBPUSD', 'frxUSDJPY', 'frxXAUUSD', 'frxXAGUSD'],
   },
 ];
 
@@ -130,7 +143,7 @@ export default function MarketDataIngestionPage() {
   const [clearing, setClearing] = useState(false);
   const [purging, setPurging] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeFilter, setActiveFilter] = useState<'all' | '1s' | 'volatility' | 'jump' | 'forex_metals'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | '1s' | 'volatility' | 'step' | 'jump' | 'forex_metals'>('all');
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -150,8 +163,9 @@ export default function MarketDataIngestionPage() {
       if (!matchesSearch) return false;
       if (activeFilter === '1s') return item.symbol.startsWith('1HZ');
       if (activeFilter === 'volatility') return item.symbol.startsWith('R_');
+      if (activeFilter === 'step') return item.symbol.toLowerCase().startsWith('stp') || item.submarket === 'step_index' || item.categoryKeys?.includes('step');
       if (activeFilter === 'jump') return item.symbol.startsWith('JD');
-      if (activeFilter === 'forex_metals') return item.symbol.startsWith('frx') || item.symbol.startsWith('FRX');
+      if (activeFilter === 'forex_metals') return item.symbol.toLowerCase().startsWith('frx') || item.market === 'forex' || item.market === 'commodities' || item.market === 'commodity' || item.categoryKeys?.includes('forex') || item.categoryKeys?.includes('metals') || item.categoryKeys?.includes('commodities');
       return true;
     });
   }, [availableSymbols, searchQuery, activeFilter]);
@@ -524,6 +538,17 @@ export default function MarketDataIngestionPage() {
                       }`}
                     >
                       Standard Vol
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveFilter('step')}
+                      className={`px-2.5 py-1 rounded-lg font-semibold transition ${
+                        activeFilter === 'step'
+                          ? 'bg-cyan-500 text-slate-950'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Step Indices
                     </button>
                     <button
                       type="button"

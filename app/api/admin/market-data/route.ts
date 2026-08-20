@@ -7,6 +7,7 @@ import {
 } from '@/lib/deriv-historical-ingestion';
 import { ingestDerivHistoricalBackfill, ingestDerivHistoricalBatch } from '@/lib/historical-backfill-controller';
 import { getMarketDataRuntimeConfig } from '@/lib/market-data-runtime-config';
+import { canonicalizeDerivSymbol, isValidDerivSymbol } from '@/lib/deriv-symbol-utils';
 import { verifySessionToken } from '../auth/route';
 
 function isAuthenticated(req: NextRequest): boolean {
@@ -21,7 +22,7 @@ function jsonHeaders() {
 
 function normalizeSymbols(value: unknown): string[] {
   const values = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
-  return [...new Set(values.filter((item): item is string => typeof item === 'string').map((item) => item.trim().toUpperCase()).filter((item) => /^[A-Z0-9_./:-]{2,64}$/.test(item)))];
+  return [...new Set(values.filter((item): item is string => typeof item === 'string').map((item) => canonicalizeDerivSymbol(item)).filter((item) => isValidDerivSymbol(item)))];
 }
 
 export async function GET(req: NextRequest) {

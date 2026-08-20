@@ -195,6 +195,34 @@ export async function getMlEnsembleAnalysisRuntimeConfig(forceRefresh = false): 
       cachedEnsembleConfig = loaded;
       ensembleCacheExpiresAt = now + CACHE_TTL_MS;
       return loaded;
+    } else {
+      const defaultConfig = {
+        enableRegimeModel: false,
+        enableAnomalyModel: false,
+        enableDeepSequentialModels: true,
+        fallbackBehavior: 'graceful_degrade',
+      };
+      const seededRows = await sql`
+        INSERT INTO ops_runtime_config (config_key, config_value, updated_at, updated_by)
+        VALUES ('ml_ensemble_analysis_controls', ${JSON.stringify(defaultConfig)}::jsonb, NOW(), 'system_init')
+        ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value
+        RETURNING config_value, updated_at, updated_by
+      `;
+      if (seededRows.length > 0 && seededRows[0]?.config_value) {
+        const val = seededRows[0].config_value;
+        const loaded: MlEnsembleAnalysisRuntimeConfig = {
+          enableRegimeModel: Boolean(val.enableRegimeModel),
+          enableAnomalyModel: Boolean(val.enableAnomalyModel),
+          enableDeepSequentialModels: val.enableDeepSequentialModels !== undefined ? Boolean(val.enableDeepSequentialModels) : true,
+          fallbackBehavior: val.fallbackBehavior === 'strict_require' ? 'strict_require' : 'graceful_degrade',
+          updatedAt: seededRows[0].updated_at ? new Date(seededRows[0].updated_at).toISOString() : null,
+          updatedBy: seededRows[0].updated_by ? String(seededRows[0].updated_by) : 'system_init',
+          source: 'database',
+        };
+        cachedEnsembleConfig = loaded;
+        ensembleCacheExpiresAt = now + CACHE_TTL_MS;
+        return loaded;
+      }
     }
   } catch (error) {
     console.error('[ops-runtime-config] error reading ensemble analysis config from database:', error);

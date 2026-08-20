@@ -6,6 +6,7 @@ import {
   purgeMarketTicksForSymbol,
   type HistoricalIngestionRun,
 } from '@/lib/deriv-historical-ingestion';
+import { canonicalizeDerivSymbol, isValidDerivSymbol } from '@/lib/deriv-symbol-utils';
 
 type Sql = any;
 
@@ -28,11 +29,11 @@ type StoredRunRow = {
 };
 
 function normalizeSymbol(symbol: string): string {
-  return symbol.trim().toUpperCase();
+  return canonicalizeDerivSymbol(symbol);
 }
 
 function normalizeSymbols(symbols: string[]): string[] {
-  return [...new Set(symbols.map(normalizeSymbol).filter((symbol) => /^[A-Z0-9_./:-]{2,64}$/.test(symbol)))];
+  return [...new Set(symbols.map(normalizeSymbol).filter((symbol) => isValidDerivSymbol(symbol)))];
 }
 
 async function getLatestLogicalRun(sql: Sql, symbol: string): Promise<StoredRunRow | null> {

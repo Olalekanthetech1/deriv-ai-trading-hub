@@ -171,7 +171,13 @@ export const SYMBOL_DISPLAY_NAMES: Record<string, string> = {
  * shows something meaningful rather than an empty string.
  */
 export function getSymbolDisplayName(symbolCode: string): string {
-  return SYMBOL_DISPLAY_NAMES[symbolCode] ?? symbolCode;
+  if (!symbolCode) return '';
+  if (SYMBOL_DISPLAY_NAMES[symbolCode]) return SYMBOL_DISPLAY_NAMES[symbolCode];
+  const lower = symbolCode.toLowerCase();
+  for (const [key, name] of Object.entries(SYMBOL_DISPLAY_NAMES)) {
+    if (key.toLowerCase() === lower) return name;
+  }
+  return symbolCode;
 }
 
 export const MARKET_DISPLAY_NAMES: Record<string, string> = {
