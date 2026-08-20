@@ -120,6 +120,17 @@ Corrective Action Taken:
           chat_id: telegramChatId,
           text: telegramMessage,
           parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '📊 System Health', callback_data: 'admin_health_status' },
+                { text: '🤖 Model Status', callback_data: 'admin_models' },
+              ],
+              [
+                { text: '🚨 Emergency Halt Trading', callback_data: 'admin_emergency_halt' },
+              ],
+            ],
+          },
         }),
       });
 

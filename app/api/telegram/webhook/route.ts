@@ -113,6 +113,88 @@ export async function POST(req: NextRequest) {
         await bot.renderAccountScreen(chatId, messageId);
       } else if (data === 'menu_settings') {
         await bot.renderSettingsScreen(chatId, messageId);
+      } else if (data === 'set_autotrade_settings_menu') {
+        await bot.renderAutotradeSettingsMenu(chatId, messageId);
+      } else if (data === 'set_language_menu') {
+        await bot.renderLanguageMenu(chatId, messageId);
+      } else if (data === 'toggle_autotrade') {
+        const user = await bot.getUser(chatId);
+        if (user) {
+          await bot.updateUser(chatId, { is_autotrading: !user.is_autotrading });
+          await bot.renderSettingsScreen(chatId, messageId);
+        }
+      } else if (data === 'preset_strat_balanced') {
+        await bot.updateUser(chatId, {
+          autotrade_strategy: 'balanced',
+          scaling_factor: 2.20,
+          max_steps: 5,
+          max_trades: 2,
+        });
+        await bot.renderAutotradeSettingsMenu(chatId, messageId);
+      } else if (data === 'preset_strat_conservative') {
+        await bot.updateUser(chatId, {
+          autotrade_strategy: 'conservative',
+          scaling_factor: 2.10,
+          max_steps: 5,
+          max_trades: 1,
+        });
+        await bot.renderAutotradeSettingsMenu(chatId, messageId);
+      } else if (data === 'preset_strat_profit') {
+        await bot.updateUser(chatId, {
+          autotrade_strategy: 'profit',
+          scaling_factor: 2.30,
+          max_steps: 10,
+          max_trades: 3,
+        });
+        await bot.renderAutotradeSettingsMenu(chatId, messageId);
+      } else if (data === 'set_custom_settings_menu') {
+        await bot.renderCustomSettingsMenu(chatId, messageId);
+      } else if (data === 'adjust_scale_menu') {
+        await bot.renderScalingFactorAdjuster(chatId, messageId);
+      } else if (data === 'adjust_steps_menu') {
+        await bot.renderMaxStepsAdjuster(chatId, messageId);
+      } else if (data === 'adjust_trades_menu') {
+        await bot.renderMaxTradesAdjuster(chatId, messageId);
+      } else if (data === 'custom_scale_up' || data === 'custom_scale_down') {
+        const user = await bot.getUser(chatId);
+        if (user) {
+          let currentScale = Number(user.scaling_factor);
+          if (data === 'custom_scale_up') currentScale = Math.min(5.00, currentScale + 0.10);
+          else currentScale = Math.max(1.00, currentScale - 0.10);
+          await bot.updateUser(chatId, {
+            autotrade_strategy: 'custom',
+            scaling_factor: Number(currentScale.toFixed(2)),
+          });
+          await bot.renderScalingFactorAdjuster(chatId, messageId);
+        }
+      } else if (data === 'custom_steps_up' || data === 'custom_steps_down') {
+        const user = await bot.getUser(chatId);
+        if (user) {
+          let currentSteps = Number(user.max_steps);
+          if (data === 'custom_steps_up') currentSteps = Math.min(15, currentSteps + 1);
+          else currentSteps = Math.max(1, currentSteps - 1);
+          await bot.updateUser(chatId, {
+            autotrade_strategy: 'custom',
+            max_steps: currentSteps,
+          });
+          await bot.renderMaxStepsAdjuster(chatId, messageId);
+        }
+      } else if (data === 'custom_trades_up' || data === 'custom_trades_down') {
+        const user = await bot.getUser(chatId);
+        if (user) {
+          let currentTrades = Number(user.max_trades);
+          if (data === 'custom_trades_up') currentTrades = Math.min(5, currentTrades + 1);
+          else currentTrades = Math.max(1, currentTrades - 1);
+          await bot.updateUser(chatId, {
+            autotrade_strategy: 'custom',
+            max_trades: currentTrades,
+          });
+          await bot.renderMaxTradesAdjuster(chatId, messageId);
+        }
+      } else if (data.startsWith('set_lang_')) {
+        const lang = data.replace('set_lang_', '');
+        await bot.updateUser(chatId, { language: lang });
+        await bot.renderLanguageMenu(chatId, messageId);
       } else if (data === 'set_duration_menu') {
         await bot.renderDurationMenu(chatId, messageId);
       } else if (data.startsWith('set_dur_')) {

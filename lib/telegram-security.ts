@@ -45,3 +45,68 @@ export function requireTelegramAdminSecret(req: NextRequest): void {
     throw new Error('TELEGRAM_ADMIN_UNAUTHORIZED');
   }
 }
+
+export function getAuthorizedAlertChatId(): number | null {
+  const raw = process.env.ALERT_TELEGRAM_CHAT_ID?.trim();
+  if (!raw) return null;
+  const num = Number(raw);
+  return Number.isSafeInteger(num) ? num : null;
+}
+
+export function getAuthorizedAdminUserIds(): Set<number> {
+  const raw = process.env.ALERT_TELEGRAM_ADMIN_USER_IDS?.trim() || '';
+  const set = new Set<number>();
+  if (!raw) return set;
+
+  for (const item of raw.split(',')) {
+    const trimmed = item.trim();
+    if (trimmed) {
+      const num = Number(trimmed);
+      if (Number.isSafeInteger(num) && num > 0) {
+        set.add(num);
+      }
+    }
+  }
+  return set;
+}
+
+export interface TelegramAdminAuthorizationResult {
+  authorized: boolean;
+  reason?: string;
+}
+
+/**
+ * Enforces dual-layer authorization for Telegram Operational Control Plane actions:
+ * Layer 1: Verify the request originates from the authorized alert chat ID (ALERT_TELEGRAM_CHAT_ID)
+ * Layer 2: Verify the caller is an explicitly authorized Telegram admin user (ALERT_TELEGRAM_ADMIN_USER_IDS)
+ */
+export function verifyTelegramAdminAuthorization(params: {
+  chatId: number;
+  userId: number;
+}): TelegramAdminAuthorizationResult {
+  const adminUserIds = getAuthorizedAdminUserIds();
+  if (adminUserIds.size === 0) {
+    return {
+      authorized: false,
+      reason: 'ALERT_TELEGRAM_ADMIN_USER_IDS_UNCONFIGURED',
+    };
+  }
+
+  if (!adminUserIds.has(params.userId)) {
+    return {
+      authorized: false,
+      reason: 'UNAUTHORIZED_TELEGRAM_ADMIN_USER',
+    };
+  }
+
+  const authorizedChatId = getAuthorizedAlertChatId();
+  if (authorizedChatId !== null && params.chatId !== authorizedChatId) {
+    return {
+      authorized: false,
+      reason: 'UNAUTHORIZED_TELEGRAM_ALERT_CHAT',
+    };
+  }
+
+  return { authorized: true };
+}
+

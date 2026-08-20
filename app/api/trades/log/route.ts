@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { getDb, initDbSchema } from '@/lib/db';
 import { ensureExecutionPlanTelemetrySchema, normalizeExecutionPlanId } from '@/lib/execution-plan-telemetry';
+import { evaluateTelemetryAlertRules } from '@/lib/telegram-telemetry-alert-engine';
 
 export async function POST(req: NextRequest) {
   try {
@@ -108,6 +109,11 @@ export async function POST(req: NextRequest) {
         })}::jsonb
       )
     `;
+
+    // Asynchronously trigger real-time telemetry alert evaluation
+    evaluateTelemetryAlertRules(sql).catch((alertErr) => {
+      console.warn('[Telemetry Trigger Error] Failed to evaluate alert rules:', alertErr);
+    });
 
     return NextResponse.json({ success: true, tradeId, executionPlanId: normalizedExecutionPlanId });
   } catch (err: any) {

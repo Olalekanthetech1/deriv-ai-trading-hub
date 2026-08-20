@@ -1,4 +1,5 @@
 import { getDbOrThrow, initDbSchema } from './db';
+import { getLiveRiseFallSymbols } from './rise-fall-symbols';
 
 export type QueueWorkerRuntimeConfig = {
   isPaused: boolean;
@@ -312,3 +313,194 @@ export async function updateMlEnsembleAnalysisRuntimeConfig(params: {
 
   return cachedEnsembleConfig;
 }
+
+export type GlobalTradingCircuitBreakerConfig = {
+  isHalted: boolean;
+  haltReason: string | null;
+  haltedAt: string | null;
+  haltedBy: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  source: 'database' | 'default';
+};
+
+let cachedCircuitBreakerConfig: GlobalTradingCircuitBreakerConfig | null = null;
+let circuitBreakerCacheExpiresAt = 0;
+
+/**
+ * Retrieves the live, dynamically persisted Global Trading Circuit Breaker state.
+ */
+export async function getGlobalTradingCircuitBreakerConfig(forceRefresh = false): Promise<GlobalTradingCircuitBreakerConfig> {
+  const now = Date.now();
+  if (!forceRefresh && cachedCircuitBreakerConfig && now < circuitBreakerCacheExpiresAt) {
+    return cachedCircuitBreakerConfig;
+  }
+
+  try {
+    await ensureOpsRuntimeConfigTable();
+    const sql = getDbOrThrow();
+    const rows = await sql`
+      SELECT config_value, updated_at, updated_by
+      FROM ops_runtime_config
+      WHERE config_key = 'global_trading_circuit_breaker'
+      LIMIT 1
+    `;
+
+    if (rows.length > 0 && rows[0]?.config_value) {
+      const val = rows[0].config_value;
+      const loaded: GlobalTradingCircuitBreakerConfig = {
+        isHalted: Boolean(val.isHalted),
+        haltReason: typeof val.haltReason === 'string' ? val.haltReason : null,
+        haltedAt: typeof val.haltedAt === 'string' ? val.haltedAt : null,
+        haltedBy: typeof val.haltedBy === 'string' ? val.haltedBy : null,
+        updatedAt: rows[0].updated_at ? new Date(rows[0].updated_at).toISOString() : null,
+        updatedBy: rows[0].updated_by ? String(rows[0].updated_by) : null,
+        source: 'database',
+      };
+
+      cachedCircuitBreakerConfig = loaded;
+      circuitBreakerCacheExpiresAt = now + CACHE_TTL_MS;
+      return loaded;
+    }
+  } catch (error) {
+    console.error('[ops-runtime-config] error reading global trading circuit breaker config from database:', error);
+  }
+
+  const fallback: GlobalTradingCircuitBreakerConfig = {
+    isHalted: false,
+    haltReason: null,
+    haltedAt: null,
+    haltedBy: null,
+    updatedAt: null,
+    updatedBy: null,
+    source: 'default',
+  };
+
+  cachedCircuitBreakerConfig = fallback;
+  circuitBreakerCacheExpiresAt = now + CACHE_TTL_MS;
+  return fallback;
+}
+
+/**
+ * Updates the Global Trading Circuit Breaker state (Emergency Halt / Resume).
+ * Idempotent, persisted, and auditable.
+ */
+export async function updateGlobalTradingCircuitBreakerConfig(params: {
+  isHalted: boolean;
+  haltReason?: string | null;
+  updatedBy?: string;
+  requestId?: string;
+}): Promise<GlobalTradingCircuitBreakerConfig> {
+  await ensureOpsRuntimeConfigTable();
+  const current = await getGlobalTradingCircuitBreakerConfig(true);
+
+  const updatedBy = params.updatedBy || 'system_admin';
+  const nowIso = new Date().toISOString();
+
+  let haltedAt = current.haltedAt;
+  let haltedBy = current.haltedBy;
+  let haltReason = current.haltReason;
+
+  if (params.isHalted) {
+    if (!current.isHalted) {
+      // Transition from Normal -> Halted
+      haltedAt = nowIso;
+      haltedBy = updatedBy;
+      haltReason = params.haltReason || 'Emergency Halt triggered by operator';
+    } else if (params.haltReason) {
+      // Idempotent halt update
+      haltReason = params.haltReason;
+    }
+  } else {
+    // Transition to Normal / Resumed
+    haltedAt = null;
+    haltedBy = null;
+    haltReason = null;
+  }
+
+  const configValue = {
+    isHalted: params.isHalted,
+    haltReason,
+    haltedAt,
+    haltedBy,
+  };
+
+  const sql = getDbOrThrow();
+  const rows = await sql`
+    INSERT INTO ops_runtime_config (config_key, config_value, updated_at, updated_by)
+    VALUES ('global_trading_circuit_breaker', ${JSON.stringify(configValue)}::jsonb, NOW(), ${updatedBy})
+    ON CONFLICT (config_key) DO UPDATE SET
+      config_value = EXCLUDED.config_value,
+      updated_at = NOW(),
+      updated_by = EXCLUDED.updated_by
+    RETURNING config_value, updated_at, updated_by
+  `;
+
+  try {
+    const action = params.isHalted
+      ? current.isHalted
+        ? 'emergency_halt_idempotent_reaffirm'
+        : 'emergency_halt_activated'
+      : 'emergency_halt_resumed';
+
+    await sql`
+      INSERT INTO ops_audit_events (
+        category, severity, actor, action, request_id, resource_type, resource_id, metadata
+      ) VALUES (
+        'trading_ops',
+        ${params.isHalted ? 'critical' : 'info'},
+        ${updatedBy},
+        ${action},
+        ${params.requestId || null},
+        'ops_runtime_config',
+        'global_trading_circuit_breaker',
+        ${JSON.stringify({ previous: current, current: configValue })}::jsonb
+      )
+    `;
+  } catch (auditErr) {
+    console.warn('[ops-runtime-config] audit log entry warning for circuit breaker:', auditErr);
+  }
+
+  cachedCircuitBreakerConfig = {
+    isHalted: params.isHalted,
+    haltReason,
+    haltedAt,
+    haltedBy,
+    updatedAt: rows[0]?.updated_at ? new Date(rows[0].updated_at).toISOString() : nowIso,
+    updatedBy: rows[0]?.updated_by ? String(rows[0].updated_by) : updatedBy,
+    source: 'database',
+  };
+  circuitBreakerCacheExpiresAt = Date.now() + CACHE_TTL_MS;
+
+  return cachedCircuitBreakerConfig;
+}
+
+/**
+ * Resumes global automated trading ONLY AFTER verifying system health gates:
+ * 1. Database schema & connectivity check
+ * 2. Active Rise/Fall symbol discovery check
+ */
+export async function resumeGlobalTradingWithHealthCheck(params: {
+  updatedBy: string;
+  requestId?: string;
+}): Promise<GlobalTradingCircuitBreakerConfig> {
+  // Gate 1: Database Health Check
+  const dbOk = await initDbSchema().catch(() => false);
+  if (!dbOk) {
+    throw new Error('RESUME_GATE_FAILED: Database connection or schema initialization failed');
+  }
+
+  // Gate 2: Symbol Universe & Deriv API Discovery Check
+  const activeSymbols = await getLiveRiseFallSymbols(true, false).catch(() => []);
+  const availableCount = activeSymbols.filter((s) => s.isAvailable && s.isOpen).length;
+  if (availableCount === 0) {
+    throw new Error('RESUME_GATE_FAILED: No active rise/fall volatility symbols discovered from Deriv');
+  }
+
+  return updateGlobalTradingCircuitBreakerConfig({
+    isHalted: false,
+    updatedBy: params.updatedBy,
+    requestId: params.requestId,
+  });
+}
+

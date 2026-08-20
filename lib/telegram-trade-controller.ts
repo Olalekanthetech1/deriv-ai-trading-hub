@@ -1,8 +1,10 @@
 import { DerivAuthenticatedClient } from './deriv-server-client';
 import { fetchDerivTickHistory } from '@/lib/ticks-helper';
 import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';
+import { getValidMarketRankingSnapshot, refreshLiveMarketRankings, type LiveMarketRankingSnapshot } from './market-ranking-cache';
 import { neon } from '@neondatabase/serverless';
 import { getDbConnectionString } from './db';
+import { getGlobalTradingCircuitBreakerConfig } from './ops-runtime-config';
 import {
   claimTelegramTradeIntent,
   decryptSecret,
@@ -51,6 +53,25 @@ export interface TelegramUserRecord {
   max_steps: number;
   max_trades: number;
   is_autotrading: boolean;
+  language: string;
+}
+
+function formatBrokerExecutionError(err: unknown): string {
+  if (!(err instanceof Error)) return 'Broker execution unavailable.';
+  const msg = err.message || '';
+  if (msg.includes('OfferingsValidationError') || msg.includes('Trading is not offered') || msg.includes('OfferingsInvalidSymbol')) {
+    return 'Trading is currently not offered or available for this asset on your account type.';
+  }
+  if (msg.includes('Input validation failed')) {
+    return 'Invalid parameter format sent to broker.';
+  }
+  if (msg.includes('InsufficientBalance') || msg.toLowerCase().includes('insufficient balance')) {
+    return 'Insufficient account balance to execute trade.';
+  }
+  if (msg.includes('MarketIsClosed') || msg.toLowerCase().includes('market is closed')) {
+    return 'The market for this asset is currently closed.';
+  }
+  return msg;
 }
 
 export class TelegramBotController {
@@ -204,6 +225,21 @@ export class TelegramBotController {
     if (updates.autotrade_strategy) {
       await sql`UPDATE telegram_users SET autotrade_strategy = ${updates.autotrade_strategy}, updated_at = NOW() WHERE chat_id = ${chatId}`;
     }
+    if (updates.is_autotrading !== undefined) {
+      await sql`UPDATE telegram_users SET is_autotrading = ${!!updates.is_autotrading}, updated_at = NOW() WHERE chat_id = ${chatId}`;
+    }
+    if (updates.scaling_factor !== undefined && Number.isFinite(Number(updates.scaling_factor))) {
+      await sql`UPDATE telegram_users SET scaling_factor = ${Number(updates.scaling_factor)}, updated_at = NOW() WHERE chat_id = ${chatId}`;
+    }
+    if (updates.max_steps !== undefined && Number.isInteger(Number(updates.max_steps))) {
+      await sql`UPDATE telegram_users SET max_steps = ${Number(updates.max_steps)}, updated_at = NOW() WHERE chat_id = ${chatId}`;
+    }
+    if (updates.max_trades !== undefined && Number.isInteger(Number(updates.max_trades))) {
+      await sql`UPDATE telegram_users SET max_trades = ${Number(updates.max_trades)}, updated_at = NOW() WHERE chat_id = ${chatId}`;
+    }
+    if (updates.language !== undefined) {
+      await sql`UPDATE telegram_users SET language = ${updates.language}, updated_at = NOW() WHERE chat_id = ${chatId}`;
+    }
   }
 
   private async requestLiveSignal(
@@ -341,91 +377,93 @@ export class TelegramBotController {
       text,
       reply_markup: keyboard,
     });
+
+    // Background pre-warm for live market rankings cache (Option 3 optimization)
+    getValidMarketRankingSnapshot().then((snapshot) => {
+      if (!snapshot) {
+        refreshLiveMarketRankings().catch((err) =>
+          console.warn('[Pre-Warm Market Rankings Error]:', err instanceof Error ? err.message : 'unknown')
+        );
+      }
+    });
   }
 
   async renderAssetSelection(chatId: number, messageId: number) {
     const user = await this.getUser(chatId);
     if (!user) return this.renderUnlinkedScreen(chatId);
 
-    // Step 1: Display initial live scanning status card
-    const scanningText =
-      `🤖 *AI IS ANALYZING THE MARKET*\n` +
-      `_Optimizing your next trades..._\n\n` +
-      `📡 *TERMINAL:* Launched ✅\n` +
-      `📶 *Data stream:* Connected ✅\n` +
-      `🤖 *AI analysis:* Running...\n` +
-      `⌛ *Next Signal:* Pending...`;
+    // Fast-Path: Check Freshness Gate for pre-computed Ranking Snapshot (Option 1)
+    let rankingSnapshot = await getValidMarketRankingSnapshot();
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
-      text: scanningText,
-      parse_mode: 'Markdown',
-    });
+    if (!rankingSnapshot) {
+      // Cache Miss or Expired -> Show dynamic progress stages while running Option 2 refresh pipeline
+      const stage1Text =
+        `🤖 *AI IS ANALYZING THE MARKET*\n` +
+        `_Optimizing your next trades..._\n\n` +
+        `📡 *TERMINAL:* Launching...\n` +
+        `📶 *Data stream:* Connecting...\n` +
+        `🤖 *AI analysis:* Initializing...\n` +
+        `⌛ *Next Signal:* Pending...`;
 
-    // Step 2: Resolve the live Deriv volatility universe from the authoritative discovery layer.
-    let candidateSymbols: RiseFallSymbolMetadata[];
-    try {
-      candidateSymbols = await this.getAuthoritativeTelegramSymbols();
-    } catch (err) {
       await this.safeSendApi('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
-        text: `⚠️ *LIVE MARKET UNIVERSE UNAVAILABLE*\n\n\`${err instanceof Error ? err.message : 'TELEGRAM_SYMBOL_UNIVERSE_UNAVAILABLE'}\`\n\nNo static market list or simulated symbols will be used. Retry when the authoritative Deriv discovery service is available.`,
+        text: stage1Text,
         parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: [[{ text: '🔄 Retry Scan', callback_data: 'menu_start_trade' }]] },
       });
-      return;
-    }
 
-    const authorizedSymbols = new Set(candidateSymbols.map((item) => item.symbol));
-    const scanResults: { symbol: string; name: string; winRate: number; signal: string }[] = [];
+      // Update Stage 2 status card
+      const stage2Text =
+        `🤖 *AI IS ANALYZING THE MARKET*\n` +
+        `_Optimizing your next trades..._\n\n` +
+        `📡 *TERMINAL:* Launched ✅\n` +
+        `📶 *Data stream:* Connected ✅\n` +
+        `🤖 *AI analysis:* Running 2-stage ensemble ranking...\n` +
+        `⌛ *Next Signal:* Pending...`;
 
-    await Promise.all(
-      candidateSymbols.map(async (metadata) => {
-        try {
-          const signal = await this.requestLiveSignal(user, metadata.symbol, authorizedSymbols);
-          const winRate = Math.round(signal.prediction.confidence);
-          scanResults.push({
-            symbol: metadata.symbol,
-            name: metadata.displayName,
-            winRate,
-            signal: signal.prediction.signal,
-          });
-        } catch (err) {
-          console.warn(`[Live ML signal unavailable for ${metadata.symbol}]:`, err instanceof Error ? err.message : 'unknown');
-        }
-      })
-    );
-
-    // If live predictions from /api/signals/predict could not be retrieved for any asset, display DEGRADED state
-    if (scanResults.length === 0) {
       await this.safeSendApi('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
-        text:
-          `⚠️ *LIVE MARKET STREAM DEGRADED*\n\n` +
-          `Unable to retrieve live AI model predictions from the signal engine. Per AGENTS.md safety rules, zero fallbacks or simulated values are permitted.\n\n` +
-          `Please tap "🔄 Retry Scan" below to re-query the production signal pipeline.`,
+        text: stage2Text,
         parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔄 Retry Scan', callback_data: 'menu_start_trade' }],
-            [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
-          ],
-        },
       });
-      return;
+
+      try {
+        rankingSnapshot = await refreshLiveMarketRankings();
+      } catch (err) {
+        console.warn('[Live Ranking Refresh Error]:', err instanceof Error ? err.message : 'unknown');
+      }
+
+      if (!rankingSnapshot || rankingSnapshot.rankings.length === 0) {
+        await this.safeSendApi('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text:
+            `⚠️ *LIVE MARKET STREAM DEGRADED*\n\n` +
+            `Unable to retrieve live AI model predictions from the signal engine. Per AGENTS.md safety rules, zero fallbacks or simulated values are permitted.\n\n` +
+            `Please tap "🔄 Retry Scan" below to re-query the production signal pipeline.`,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔄 Retry Scan', callback_data: 'menu_start_trade' }],
+              [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
+            ],
+          },
+        });
+        return;
+      }
+    } else {
+      // Cache Hit (<100ms response) -> Trigger async background refresh to keep cache warm
+      refreshLiveMarketRankings().catch((err) =>
+        console.warn('[Background Warmup Error]:', err instanceof Error ? err.message : 'unknown')
+      );
     }
 
-    // Sort scanned assets by win rate descending
-    scanResults.sort((a, b) => b.winRate - a.winRate);
-
-    // Step 3: Format dynamic leaderboard & choice buttons
+    // Format dynamic leaderboard & choice buttons from validated ranking snapshot
     let leaderboardLines = '';
     const keyboardButtons: { text: string; callback_data: string }[][] = [];
 
-    scanResults.forEach((res, index) => {
+    rankingSnapshot.rankings.forEach((res, index) => {
       const medal = index === 0 ? '🏆' : '✅';
       leaderboardLines += `${medal} *${res.name}*: Win rate = *${res.winRate}%*\n`;
       const btnIcon = index === 0 ? '🏆' : '📈';
@@ -439,10 +477,11 @@ export class TelegramBotController {
 
     keyboardButtons.push([{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]);
 
+    const dataAgeSec = (rankingSnapshot.dataAgeMs / 1000).toFixed(1);
     const finalMessageText =
       `📊 *CHOOSE TRADING ASSET*\n` +
       `_Select your preferred market asset_\n\n` +
-      `🏆 *Bot Prediction:*\n` +
+      `🏆 *Bot Prediction:* _(Freshness: ${dataAgeSec}s, ${rankingSnapshot.modelVersion || 'v2-production'})_\n` +
       `Highest chance to win right now:\n` +
       `${leaderboardLines}\n` +
       `📌 *Make your choice below*`;
@@ -549,6 +588,18 @@ export class TelegramBotController {
         chat_id: chatId,
         message_id: messageId,
         text: 'ℹ️ This Telegram trade request was already processed or is still in progress.',
+      });
+      return;
+    }
+
+    const circuitBreaker = await getGlobalTradingCircuitBreakerConfig();
+    if (circuitBreaker.isHalted) {
+      await updateTelegramTradeIntent(sql, idempotencyKey, 'blocked_circuit_breaker');
+      const reasonText = circuitBreaker.haltReason ? `\n*Reason:* ${circuitBreaker.haltReason}` : '';
+      await this.safeSendApi('sendMessage', {
+        chat_id: chatId,
+        text: `🚨 *TRADING HALTED BY OPERATIONAL CONTROL*\n\nAutomated trade execution is currently paused by system circuit breaker.${reasonText}\n\n*Status:* Execution Aborted (Fail-Closed)`,
+        parse_mode: 'Markdown',
       });
       return;
     }
@@ -671,11 +722,13 @@ export class TelegramBotController {
       });
     } catch (err) {
       await updateTelegramTradeIntent(sql, idempotencyKey, 'failed');
-      console.error('[Trade Execution Failed]:', err instanceof Error ? err.message : 'unknown');
+      const rawError = err instanceof Error ? err.message : 'unknown';
+      console.error('[Trade Execution Failed]:', rawError);
+      const userMessage = formatBrokerExecutionError(err);
       await this.safeSendApi('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
-        text: `❌ *Trade blocked*\n\n\`${err instanceof Error ? err.message : 'Broker execution unavailable'}\``,
+        text: `❌ *Trade blocked*\n\n\`${userMessage}\``,
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [[{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]],
@@ -758,21 +811,195 @@ export class TelegramBotController {
     const user = await this.getUser(chatId);
     if (!user) return;
 
+    const modeText = user.is_autotrading ? '🟢 AUTOTRADE ACTIVE' : '🔴 MANUAL ONLY';
+    const langLabel = user.language === 'es' ? 'Español 🇪🇸' : user.language === 'fr' ? 'Français 🇫🇷' : 'English 🇺🇸';
+
     await this.safeSendApi('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text:
-        `⚙️ *SETTINGS & RISK CONTROLS*\n\n` +
-        `🎯 *Configured Duration:* \`${user.active_duration_value} ${user.active_duration_unit.toUpperCase()}\`\n` +
-        `⚡ *Autotrade Strategy:* \`${user.autotrade_strategy.toUpperCase()}\`\n` +
-        `📈 *Scaling Factor:* \`${user.scaling_factor}x\`\n` +
-        `🛑 *Max Recovery Steps:* \`${user.max_steps}\`\n` +
-        `🔒 *HDE Lineage Gate:* \`Active\``,
+        `⚙️ *SETTINGS*\n` +
+        `_Configure your preferences and options_\n\n` +
+        `⚙️ *Trading Options*\n\n` +
+        `🎯 *Autotrade Settings*\n` +
+        `Fine-tune the bot to match your style — full control at your fingertips.\n\n` +
+        `⏳ *Expiration Time*\n` +
+        `Decide when your trades close (Current: \`${user.active_duration_value} ${user.active_duration_unit.toUpperCase()}\`).\n\n` +
+        `🛠️ *Mode Selection*\n` +
+        `Switch between Manual and Autotrade anytime (Current: \`${modeText}\`).\n\n` +
+        `🌐 *Language*\n` +
+        `Select your preferred interface language (Current: \`${langLabel}\`).`,
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '⏱ Expiration Duration', callback_data: 'set_duration_menu' }],
-          [{ text: '🔙 Back to Dashboard', callback_data: 'nav_main_menu' }],
+          [{ text: '🎯 Autotrade Settings', callback_data: 'set_autotrade_settings_menu' }],
+          [{ text: '⏳ Expiration Time', callback_data: 'set_duration_menu' }],
+          [{ text: `🛠️ Mode: ${user.is_autotrading ? 'Autotrade 🟢' : 'Manual 🔴'}`, callback_data: 'toggle_autotrade' }],
+          [{ text: '🌐 Language', callback_data: 'set_language_menu' }],
+          [{ text: '🔙 Back', callback_data: 'nav_main_menu' }],
+        ],
+      },
+    });
+  }
+
+  async renderAutotradeSettingsMenu(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    if (!user) return;
+
+    let strategyLabel = 'Balanced ⚖️';
+    if (user.autotrade_strategy === 'conservative') strategyLabel = 'Conservative 🛡️';
+    else if (user.autotrade_strategy === 'profit') strategyLabel = 'Profit 📈';
+    else if (user.autotrade_strategy === 'custom') strategyLabel = 'Custom Settings ⚙️';
+
+    await this.safeSendApi('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text:
+        `🎯 *AUTOTRADE STRATEGY PRESETS*\n` +
+        `_Select a pre-configured risk-and-recovery profile or customize parameters._\n\n` +
+        `⚡ *Active Profile:* \`${strategyLabel}\`\n` +
+        `📊 *Scaling Factor:* \`${Number(user.scaling_factor).toFixed(2)}\`\n` +
+        `🔄 *Max Steps:* \`${user.max_steps}\`\n` +
+        `📈 *Max Trades:* \`${user.max_trades}\`\n\n` +
+        `• *Balanced ⚖️*: \`2.20x\` scaling, \`5\` max steps, \`2\` max trades.\n` +
+        `• *Conservative 🛡️*: \`2.10x\` scaling, \`5\` max steps, \`1\` max trade.\n` +
+        `• *Profit 📈*: \`2.30x\` scaling, \`10\` max steps, \`3\` max trades.`,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '⚖️ Balanced', callback_data: 'preset_strat_balanced' },
+            { text: '🛡️ Conservative', callback_data: 'preset_strat_conservative' },
+          ],
+          [
+            { text: '📈 Profit', callback_data: 'preset_strat_profit' },
+            { text: '⚙️ Custom Settings', callback_data: 'set_custom_settings_menu' },
+          ],
+          [{ text: '🔙 Back to Settings', callback_data: 'menu_settings' }],
+        ],
+      },
+    });
+  }
+
+  async renderCustomSettingsMenu(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    if (!user) return;
+
+    await this.safeSendApi('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text:
+        `⚙️ *Custom Settings*\n\n` +
+        `📊 *Scaling factor:* \`${Number(user.scaling_factor).toFixed(2)}\`\n` +
+        `🔄 *Max Steps:* \`${user.max_steps}\`\n` +
+        `📈 *Max Trades:* \`${user.max_trades}\`\n\n` +
+        `Set up your strategy:`,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📊 Scaling factor', callback_data: 'adjust_scale_menu' }],
+          [{ text: '🔄 Max Steps', callback_data: 'adjust_steps_menu' }],
+          [{ text: '📈 Max Trades', callback_data: 'adjust_trades_menu' }],
+          [{ text: '🔙 Back', callback_data: 'set_autotrade_settings_menu' }],
+        ],
+      },
+    });
+  }
+
+  async renderScalingFactorAdjuster(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    if (!user) return;
+
+    await this.safeSendApi('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text:
+        `📊 *ADJUST SCALING FACTOR*\n` +
+        `_Configure the multiplier applied to recovery trade sizes._\n\n` +
+        `📊 *Current Scaling Factor:* \`${Number(user.scaling_factor).toFixed(2)}\``,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '➖ 0.10', callback_data: 'custom_scale_down' },
+            { text: '➕ 0.10', callback_data: 'custom_scale_up' },
+          ],
+          [{ text: '🔙 Back to Custom Settings', callback_data: 'set_custom_settings_menu' }],
+        ],
+      },
+    });
+  }
+
+  async renderMaxStepsAdjuster(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    if (!user) return;
+
+    await this.safeSendApi('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text:
+        `🔄 *ADJUST MAX RECOVERY STEPS*\n` +
+        `_Configure the maximum sequence steps for automated recovery._\n\n` +
+        `🔄 *Current Max Steps:* \`${user.max_steps}\``,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '➖ 1', callback_data: 'custom_steps_down' },
+            { text: '➕ 1', callback_data: 'custom_steps_up' },
+          ],
+          [{ text: '🔙 Back to Custom Settings', callback_data: 'set_custom_settings_menu' }],
+        ],
+      },
+    });
+  }
+
+  async renderMaxTradesAdjuster(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    if (!user) return;
+
+    await this.safeSendApi('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text:
+        `📈 *ADJUST MAX TRADES*\n` +
+        `_Configure the maximum overall concurrent active trades allowed._\n\n` +
+        `📈 *Current Max Trades:* \`${user.max_trades}\``,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '➖ 1', callback_data: 'custom_trades_down' },
+            { text: '➕ 1', callback_data: 'custom_trades_up' },
+          ],
+          [{ text: '🔙 Back to Custom Settings', callback_data: 'set_custom_settings_menu' }],
+        ],
+      },
+    });
+  }
+
+  async renderLanguageMenu(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    if (!user) return;
+
+    const currentLang = user.language === 'es' ? 'Español 🇪🇸' : user.language === 'fr' ? 'Français 🇫🇷' : 'English 🇺🇸';
+
+    await this.safeSendApi('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text:
+        `🌐 *LANGUAGE SETTINGS*\n` +
+        `_Select your preferred interface language_\n\n` +
+        `🌐 *Active Language:* \`${currentLang}\``,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🇺🇸 English', callback_data: 'set_lang_en' },
+            { text: '🇪🇸 Español', callback_data: 'set_lang_es' },
+            { text: '🇫🇷 Français', callback_data: 'set_lang_fr' },
+          ],
+          [{ text: '🔙 Back to Settings', callback_data: 'menu_settings' }],
         ],
       },
     });

@@ -34,8 +34,10 @@
     "db:storage:audit": "node scripts/db-storage-maintenance.mjs",
     "db:storage:prune": "node scripts/db-storage-maintenance.mjs --prune-ticks",
     "postinstall": "node scripts/copy-smartcharts-assets.js",
-    "prebuild": "node scripts/copy-smartcharts-assets.js && npm run verify-ml-architecture && npm run verify-gate6-legacy && npm run verify-signal-forensics && npm run verify-model-operations && npm run verify-legacy-model-registry-migration && npm run verify-ml-config && npm run verify-retraining-automation && npm run verify-asset-aware-strategy && npm run verify-ml-promotion-metrics && npm run verify-dataset-builder-scope && npm run verify-dataset-batch-deletion && npm run verify-prediction-trading-integration && npm run verify-production-model-contract && npm run verify-ml-horizon-contract && npm run verify-ml-horizon-cohort && npm run verify-telegram-symbol-universe",
-    "verify-telegram-symbol-universe": "node scripts/tests/telegram-symbol-universe-invariants.mjs"
+    "prebuild": "node scripts/copy-smartcharts-assets.js && npm run verify-ml-architecture && npm run verify-gate6-legacy && npm run verify-signal-forensics && npm run verify-model-operations && npm run verify-legacy-model-registry-migration && npm run verify-ml-config && npm run verify-retraining-automation && npm run verify-asset-aware-strategy && npm run verify-ml-promotion-metrics && npm run verify-dataset-builder-scope && npm run verify-dataset-batch-deletion && npm run verify-prediction-trading-integration && npm run verify-production-model-contract && npm run verify-ml-horizon-contract && npm run verify-ml-horizon-cohort && npm run verify-telegram-symbol-universe && npm run verify-telegram-admin-control-plane && npm run verify-telegram-telemetry-alert",
+    "verify-telegram-symbol-universe": "node scripts/tests/telegram-symbol-universe-invariants.mjs",
+    "verify-telegram-admin-control-plane": "tsx scripts/tests/telegram-admin-control-plane-invariants.ts",
+    "verify-telegram-telemetry-alert": "tsx scripts/tests/telegram-telemetry-alert-invariants.ts"
   },
   "dependencies": {
     "@deriv-com/smartcharts-champion": "^1.9.13",

@@ -64,6 +64,7 @@ Act as the project's Senior Software Architect, Full-Stack Engineer, Security En
 
 ## 9. Real-Time Systems
 - WebSockets: safe reconnects, avoid duplicate subscriptions, clean up listeners/timers, bound buffers, prevent UI re-render thrashing.
+- The Telegram administrative control plane must be privacy-preserving by design: user-level trading data remains within its authorized data boundary, while Telegram receives only aggregated operational telemetry necessary for system monitoring and emergency intervention.
 
 ## 10. Performance & Frontend
 - Responsive design (mobile, tablet, desktop).

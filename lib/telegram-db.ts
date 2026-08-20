@@ -45,9 +45,15 @@ export async function ensureTelegramSchema(sqlInstance?: any) {
         max_steps INTEGER NOT NULL DEFAULT 4,
         max_trades INTEGER NOT NULL DEFAULT 5,
         is_autotrading BOOLEAN NOT NULL DEFAULT FALSE,
+        language VARCHAR(16) NOT NULL DEFAULT 'en',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
+    `;
+
+    // Ensure language column exists for legacy databases
+    await sql`
+      ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS language VARCHAR(16) NOT NULL DEFAULT 'en'
     `;
 
     await sql`
@@ -170,7 +176,7 @@ export async function claimTelegramTradeIntent(
 export async function updateTelegramTradeIntent(
   sql: any,
   idempotencyKey: string,
-  status: 'completed' | 'failed',
+  status: 'completed' | 'failed' | 'blocked_circuit_breaker',
   contractId?: number
 ): Promise<void> {
   await sql`

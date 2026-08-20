@@ -94,7 +94,7 @@ class DerivDiscoverySession {
           currency: process.env.DERIV_DISCOVERY_CURRENCY?.trim().toUpperCase() || 'USD',
           duration: value,
           duration_unit: unit,
-          underlying_symbol: symbol,
+          symbol: symbol,
           ...capability.probe,
         }, 'proposal', 8000);
         return true;
