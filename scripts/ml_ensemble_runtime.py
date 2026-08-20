@@ -233,11 +233,26 @@ def _aggregate_horizon_surface(request: dict[str, Any], model_types: list[str]) 
     keys: set[str] = set()
     for model in production_models.values():
         if not isinstance(model, dict): continue
+        d_val = model.get("durationValue")
+        d_unit = model.get("durationUnit")
+        if d_val is not None and d_unit is not None:
+            try:
+                keys.add(f"{int(d_val)}{str(d_unit).lower()}")
+            except (ValueError, TypeError):
+                pass
         if not bool(model.get("isMultiHorizon")): continue
         metrics = model.get("validation")
         h_metrics = metrics.get("horizonMetrics") if isinstance(metrics, dict) else None
         if not isinstance(h_metrics, dict) or not h_metrics: continue
         keys.update(str(key) for key in h_metrics.keys())
+    if not keys:
+        req_val = request.get("durationValue")
+        req_unit = request.get("durationUnit")
+        if req_val is not None and req_unit is not None:
+            try:
+                keys.add(f"{int(req_val)}{str(req_unit).lower()}")
+            except (ValueError, TypeError):
+                pass
     if not keys: raise ValueError("AUTHORITATIVE_HORIZON_METRICS_UNAVAILABLE")
 
     horizon_surface: dict[str, dict[str, Any]] = {}
@@ -298,4 +313,6 @@ def predict_ensemble(request: dict[str, Any]) -> dict[str, Any]:
             models[model_type] = result
 
     horizon_surface = _aggregate_horizon_surface(request, model_types)
-    return {"success": True, "id": request.get("id"), "models": {model_type: models[model_type] for model_type in model_types}, "horizons": horizon_surface, "execution": {"mode": "bounded_parallel", "workerCount": max_workers, "requestedModelCount": len(model_types), "governedProductionArtifacts": True}}
+    models_out = {model_type: models[model_type] for model_type in model_types}
+    models_out["horizons"] = horizon_surface
+    return {"success": True, "id": request.get("id"), "models": models_out, "horizons": horizon_surface, "execution": {"mode": "bounded_parallel", "workerCount": max_workers, "requestedModelCount": len(model_types), "governedProductionArtifacts": True}}

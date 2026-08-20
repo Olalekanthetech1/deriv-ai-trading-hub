@@ -336,6 +336,61 @@ export async function resolveAndMaterializeProductionModel(model: ProductionMode
   return materializeModelArtifact(model.modelId);
 }
 
+export async function getEligibleProductionHorizons(symbol: string): Promise<Array<{ value: number; unit: 't' | 's' | 'm' | 'h' | 'd'; seconds: number; label: string; key: string }>> {
+  if (!(await initDbSchema())) throw new Error('PRODUCTION_MODEL_REGISTRY_UNAVAILABLE');
+  const sql = getDb();
+  if (!sql) throw new Error('PRODUCTION_MODEL_REGISTRY_UNAVAILABLE');
+
+  const rows = await sql`
+    SELECT duration_value, duration_unit, duration_seconds, strategy_key, metrics
+    FROM ml_model_registry_v2
+    WHERE asset_symbol = ${symbol}::varchar
+      AND status = 'production'
+  `;
+
+  if (!rows || !rows.length) return [];
+
+  const horizonMap = new Map<string, { value: number; unit: 't' | 's' | 'm' | 'h' | 'd'; seconds: number; label: string; key: string }>();
+
+  for (const row of rows as any[]) {
+    const val = Number(row.duration_value);
+    const unit = normalizeDurationUnit(String(row.duration_unit)) as 't' | 's' | 'm' | 'h' | 'd';
+    if (Number.isFinite(val) && val > 0 && unit) {
+      const key = `${Math.trunc(val)}${unit}`;
+      const sec = row.duration_seconds != null ? Number(row.duration_seconds) : durationToSec(val, unit);
+      const name = unit === 't' ? 'Tick' : unit === 's' ? 'Second' : unit === 'm' ? 'Minute' : unit === 'h' ? 'Hour' : 'Day';
+      horizonMap.set(key, { value: Math.trunc(val), unit, seconds: sec, label: `${Math.trunc(val)} ${name}${Math.trunc(val) === 1 ? '' : 's'}`, key });
+    }
+
+    const metrics = row.metrics && typeof row.metrics === 'object' ? row.metrics : {};
+    const isMultiHorizon = row.strategy_key === 'unified_multi_horizon' || Boolean(metrics.trainedOnceForMultiHorizon);
+    if (isMultiHorizon && metrics.horizonMetrics && typeof metrics.horizonMetrics === 'object') {
+      for (const [hKey, hMetric] of Object.entries(metrics.horizonMetrics as Record<string, any>)) {
+        if (!hMetric || typeof hMetric !== 'object') continue;
+        const hVal = Number(hMetric.durationValue);
+        const hUnitStr = String(hMetric.durationUnit || '').toLowerCase();
+        try {
+          const hUnit = normalizeDurationUnit(hUnitStr) as 't' | 's' | 'm' | 'h' | 'd';
+          if (Number.isFinite(hVal) && hVal > 0) {
+            const parsedKey = `${Math.trunc(hVal)}${hUnit}`;
+            const sec = durationToSec(hVal, hUnit);
+            const name = hUnit === 't' ? 'Tick' : hUnit === 's' ? 'Second' : hUnit === 'm' ? 'Minute' : hUnit === 'h' ? 'Hour' : 'Day';
+            horizonMap.set(parsedKey, { value: Math.trunc(hVal), unit: hUnit, seconds: sec, label: `${Math.trunc(hVal)} ${name}${Math.trunc(hVal) === 1 ? '' : 's'}`, key: parsedKey });
+          }
+        } catch {}
+      }
+    }
+  }
+
+  const list = [...horizonMap.values()];
+  list.sort((a, b) => {
+    if (a.unit === 't' && b.unit !== 't') return -1;
+    if (a.unit !== 't' && b.unit === 't') return 1;
+    return a.seconds - b.seconds;
+  });
+  return list;
+}
+
 export async function getProductionModelHealth(symbol?: string) {
   if (!(await initDbSchema())) throw new Error('PRODUCTION_MODEL_REGISTRY_UNAVAILABLE');
   const sql = getDb();

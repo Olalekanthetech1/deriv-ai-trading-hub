@@ -15,6 +15,7 @@ import { evaluateHorizonDecisionSnapshot, type CandidateHorizon, type HorizonDec
 import { validateHdeCompliance } from '@/lib/hde-compliance-validator';
 import { getDerivDurationDiscovery } from '@/lib/deriv-duration-registry';
 import { resolveAuthoritativeAssetContext } from '@/lib/authoritative-asset-context';
+import { getEligibleProductionHorizons } from '@/lib/production-model-resolver';
 import type { DurationOption, DurationSelectUnit } from '@/lib/duration-utils';
 
 export interface DurationPrediction { value: number; unit: 't' | 's' | 'm' | 'h' | 'd'; label: string; direction: 'RISE' | 'FALL'; confidence: number; winRate: string; }
@@ -69,7 +70,8 @@ function assertFreshLiveTicks(ticks: TickPoint[]): void {
   const ordered = intervals.slice().sort((a, b) => a - b);
   const medianInterval = ordered[Math.floor(ordered.length / 2)];
   const latestAge = Date.now() - sorted[sorted.length - 1].timestamp;
-  if (!Number.isFinite(latestAge) || latestAge < 0 || latestAge > medianInterval) throw new Error('LIVE_TICK_DATA_STALE');
+  const maxAllowedAge = Math.max(medianInterval * 4, 6000);
+  if (!Number.isFinite(latestAge) || latestAge < -2000 || latestAge > maxAllowedAge) throw new Error('LIVE_TICK_DATA_STALE');
 }
 
 function buildSignalItems(ensemble: ProductionEnsembleResult, duration: ExecutionHorizon, now: number): SignalResponseItem[] {
@@ -168,7 +170,21 @@ export async function POST(req: NextRequest) {
       requiredContextTicks: tickList.length,
     });
 
-    const selectionEnsemble = await evaluateAtHorizon(requestedHorizon);
+    const eligibleHorizons = await getEligibleProductionHorizons(symbol);
+    if (!eligibleHorizons.length) throw new Error(`NO_VALIDATED_PRODUCTION_MODELS:${symbol}:ANY`);
+
+    const initialEvaluationHorizon = (mode === 'manual' || eligibleHorizons.some((h) => sameHorizon(h, requestedHorizon)))
+      ? requestedHorizon
+      : (() => {
+          const autoMode = body?.autoHorizonMode as DurationSelectUnit | 'auto' | undefined;
+          const filtered = (autoMode && autoMode !== 'auto')
+            ? eligibleHorizons.filter((h) => h.unit === autoMode)
+            : eligibleHorizons;
+          const chosen = filtered[0] || eligibleHorizons[0];
+          return normalizeDuration(chosen.value, chosen.unit);
+        })();
+
+    const selectionEnsemble = await evaluateAtHorizon(initialEvaluationHorizon);
     const initialDecisionSnapshot = evaluateHorizonDecisionSnapshot({
       symbol,
       mode,
@@ -180,7 +196,7 @@ export async function POST(req: NextRequest) {
     });
 
     const selectedHorizon = mode === 'manual' ? requestedHorizon : horizonFromDecision(initialDecisionSnapshot.decision.horizon);
-    const predictionEnsemble = sameHorizon(requestedHorizon, selectedHorizon) ? selectionEnsemble : await evaluateAtHorizon(selectedHorizon);
+    const predictionEnsemble = sameHorizon(initialEvaluationHorizon, selectedHorizon) ? selectionEnsemble : await evaluateAtHorizon(selectedHorizon);
     if (!predictionEnsemble.strategyGate.accepted) throw new Error('SIGNAL_UNAVAILABLE:STRATEGY_GATE_BLOCKED_SELECTED_HORIZON');
 
     const decisionSnapshot = evaluateHorizonDecisionSnapshot({

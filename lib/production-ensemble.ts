@@ -129,7 +129,7 @@ export async function evaluateProductionEnsemble(ticks: TickPoint[], options: { 
   modelBreakdown.isolation_forest = ensembleConfig.enableAnomalyModel
     ? { modelName: getMlModelDefinition('isolation_forest')?.displayName, status: 'AVAILABLE', anomalyScore: iso.anomalyScore, isAnomaly: Boolean(iso.isAnomaly), details: `${iso.engine || 'Native trained IsolationForest'} · ${assetContext.assetLabel}` }
     : { modelName: getMlModelDefinition('isolation_forest')?.displayName, status: 'DISABLED', anomalyScore: null, isAnomaly: null, details: 'Anomaly model disabled by persisted runtime configuration.' };
-  const remoteHorizons = remote.models.horizons;
+  const remoteHorizons = remote.horizons || remote.models?.horizons;
   if (!remoteHorizons || typeof remoteHorizons !== 'object') throw new Error('AUTHORITATIVE_HORIZON_ANALYSIS_UNAVAILABLE');
   modelBreakdown.horizons = remoteHorizons;
 

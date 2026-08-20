@@ -2,6 +2,7 @@ import type { ProductionEnsembleResult, Signal } from './production-ensemble';
 import { durationToSeconds } from './deriv-duration-registry';
 import type { DurationOption, DurationSelectUnit } from './duration-utils';
 import { recordModelTradeOutcome } from './probabilistic-drift-engine';
+import { evaluateAndTriggerCohortRetraining } from './ml-cohort-retraining-trigger';
 
 export type HorizonDecisionMode = 'auto' | 'ai_assist' | 'manual';
 
@@ -43,15 +44,30 @@ function candidateFromOption(option: DurationOption, value: number): CandidateHo
 }
 
 function getLiveCandidateHorizons(durationOptions: DurationOption[], horizonMap: Record<string, unknown>): CandidateHorizon[] {
-  if (!durationOptions.length) throw new Error('AUTHORITATIVE_DURATION_OPTIONS_UNAVAILABLE');
   const result = new Map<string, CandidateHorizon>();
-  for (const option of durationOptions) {
-    if (option.unit === 'end-time') continue;
+  if (durationOptions && durationOptions.length) {
+    for (const option of durationOptions) {
+      if (option.unit === 'end-time') continue;
+      for (const key of Object.keys(horizonMap)) {
+        if (!key.endsWith(option.unit)) continue;
+        const value = Number(key.slice(0, -option.unit.length));
+        if (!Number.isFinite(value) || value < option.min || value > option.max) continue;
+        result.set(key, candidateFromOption(option, value));
+      }
+    }
+  }
+  if (!result.size) {
     for (const key of Object.keys(horizonMap)) {
-      if (!key.endsWith(option.unit)) continue;
-      const value = Number(key.slice(0, -option.unit.length));
-      if (!Number.isFinite(value) || value < option.min || value > option.max) continue;
-      result.set(key, candidateFromOption(option, value));
+      const match = key.match(/^(\d+)([tsmhd])$/i);
+      if (match) {
+        const val = Number(match[1]);
+        const unit = match[2].toLowerCase() as 't' | 's' | 'm' | 'h' | 'd';
+        if (Number.isFinite(val) && val > 0) {
+          const seconds = unit === 't' ? val : Number(durationToSeconds(val, unit));
+          const name = unit === 't' ? 'Tick' : unit === 's' ? 'Second' : unit === 'm' ? 'Minute' : unit === 'h' ? 'Hour' : 'Day';
+          result.set(key, { value: val, unit, seconds, label: `${val} ${name}${val === 1 ? '' : 's'}`, key });
+        }
+      }
     }
   }
   if (!result.size) throw new Error('AUTHORITATIVE_HORIZON_OPTIONS_UNAVAILABLE');
@@ -81,7 +97,9 @@ export function getHorizonEmpiricalReliability(symbol: string, horizonKey: strin
 export function recordHorizonOutcome(params: { symbol: string; horizonKey: string; outcome: 'WIN' | 'LOSS'; profit: number; timestamp: number; modelVersion: string; regime: string; predictedProbability: number; }): void {
   if (!params.modelVersion || !params.regime) throw new Error('HORIZON_OUTCOME_METADATA_REQUIRED');
   if (!Number.isFinite(params.profit) || !Number.isFinite(params.timestamp)) throw new Error('HORIZON_OUTCOME_INVALID');
-  recordModelTradeOutcome({ asset: params.symbol, horizonKey: params.horizonKey, modelVersion: params.modelVersion, regime: params.regime, predictedProbability: params.predictedProbability, observedOutcome: params.outcome, profit: params.profit, timestamp: params.timestamp });
+  const symbol = params.symbol;
+  recordModelTradeOutcome({ asset: symbol, horizonKey: params.horizonKey, modelVersion: params.modelVersion, regime: params.regime, predictedProbability: params.predictedProbability, observedOutcome: params.outcome, profit: params.profit, timestamp: params.timestamp });
+  evaluateAndTriggerCohortRetraining({ assetSymbol: symbol }).catch(() => {});
 }
 
 export function calibrateProbability(): never { throw new Error('CALIBRATION_ARTIFACT_REQUIRED'); }
