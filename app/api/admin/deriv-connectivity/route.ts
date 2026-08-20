@@ -11,6 +11,16 @@ export const maxDuration = 40;
 const DEFAULT_ENDPOINT = 'wss://api.derivws.com/trading/v1/options/ws/public';
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+type SerializedError = {
+  name: string;
+  message: string;
+  code?: string;
+  errno?: number;
+  syscall?: string;
+  address?: string;
+  port?: number;
+};
+
 function isAuthorized(req: NextRequest): boolean {
   const cookieToken = req.cookies.get('admin_session_token')?.value;
   const headerToken = req.headers.get('x-admin-token') || req.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
@@ -21,15 +31,21 @@ function elapsedMs(start: bigint): number {
   return Number(process.hrtime.bigint() - start) / 1_000_000;
 }
 
-function serializeError(error: unknown): { name: string; message: string; code?: string; errno?: number; syscall?: string; address?: string; port?: number } {
-  const value = error as NodeJS.ErrnoException | undefined;
+function serializeError(error: unknown): SerializedError {
+  const value = error as {
+    code?: unknown;
+    errno?: unknown;
+    syscall?: unknown;
+    address?: unknown;
+    port?: unknown;
+  } | undefined;
   return {
     name: error instanceof Error ? error.name : 'Error',
     message: error instanceof Error ? error.message : String(error),
-    ...(value?.code ? { code: String(value.code) } : {}),
+    ...(typeof value?.code === 'string' ? { code: value.code } : {}),
     ...(typeof value?.errno === 'number' ? { errno: value.errno } : {}),
-    ...(value?.syscall ? { syscall: String(value.syscall) } : {}),
-    ...(value?.address ? { address: String(value.address) } : {}),
+    ...(typeof value?.syscall === 'string' ? { syscall: value.syscall } : {}),
+    ...(typeof value?.address === 'string' ? { address: value.address } : {}),
     ...(typeof value?.port === 'number' ? { port: value.port } : {}),
   };
 }
