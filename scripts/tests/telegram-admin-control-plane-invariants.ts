@@ -66,39 +66,46 @@ async function runTests() {
 
     const hasDb = Boolean(process.env.DATABASE_URL?.trim());
     if (!hasDb) {
-      console.log('  ⚠️ DATABASE_URL not set. Skipping live DB-dependent circuit breaker tests.');
+      console.log('  [SKIPPED_RUNTIME_ONLY] Case 2.1: Default / Initial State (Requires live DATABASE_URL)');
+      console.log('  [SKIPPED_RUNTIME_ONLY] Case 2.2: Halting the Circuit Breaker (Requires live DATABASE_URL)');
+      console.log('  [SKIPPED_RUNTIME_ONLY] Case 2.3: Idempotent Halt Call (Requires live DATABASE_URL)');
     } else {
-      // Case 2.1: Default / Initial State
-      const initialConfig = await getGlobalTradingCircuitBreakerConfig(true);
-      assert.strictEqual(typeof initialConfig.isHalted, 'boolean');
-      console.log(`  ✅ Case 2.1 Passed: Circuit breaker query returned valid schema (isHalted = ${initialConfig.isHalted})`);
+      try {
+        // Case 2.1: Default / Initial State
+        const initialConfig = await getGlobalTradingCircuitBreakerConfig(true);
+        assert.strictEqual(typeof initialConfig.isHalted, 'boolean');
+        console.log(`  [PASS] Case 2.1: Circuit breaker query returned valid schema (isHalted = ${initialConfig.isHalted})`);
 
-      // Case 2.2: Halting the Circuit Breaker
-      const testReason = 'Invariant Test Emergency Halt';
-      const haltConfig = await updateGlobalTradingCircuitBreakerConfig({
-        isHalted: true,
-        haltReason: testReason,
-        updatedBy: 'invariant_test_runner',
-      });
+        // Case 2.2: Halting the Circuit Breaker
+        const testReason = 'Invariant Test Emergency Halt';
+        const haltConfig = await updateGlobalTradingCircuitBreakerConfig({
+          isHalted: true,
+          haltReason: testReason,
+          updatedBy: 'invariant_test_runner',
+        });
 
-      assert.strictEqual(haltConfig.isHalted, true, 'Circuit breaker should be halted');
-      assert.strictEqual(haltConfig.haltReason, testReason);
-      assert.strictEqual(haltConfig.updatedBy, 'invariant_test_runner');
-      assert.ok(haltConfig.haltedAt, 'haltedAt timestamp should be set');
-      const originalHaltedAt = haltConfig.haltedAt;
-      console.log('  ✅ Case 2.2 Passed: Emergency Halt activated with reason and timestamp');
+        assert.strictEqual(haltConfig.isHalted, true, 'Circuit breaker should be halted');
+        assert.strictEqual(haltConfig.haltReason, testReason);
+        assert.strictEqual(haltConfig.updatedBy, 'invariant_test_runner');
+        assert.ok(haltConfig.haltedAt, 'haltedAt timestamp should be set');
+        const originalHaltedAt = haltConfig.haltedAt;
+        console.log('  [PASS] Case 2.2: Emergency Halt activated with reason and timestamp');
 
-      // Case 2.3: Idempotent Halt Call (Reaffirming Halt)
-      await new Promise((r) => setTimeout(r, 20)); // Small sleep to ensure clock advances
-      const reaffirmConfig = await updateGlobalTradingCircuitBreakerConfig({
-        isHalted: true,
-        updatedBy: 'invariant_test_runner_reaffirm',
-      });
+        // Case 2.3: Idempotent Halt Call (Reaffirming Halt)
+        await new Promise((r) => setTimeout(r, 20)); // Small sleep to ensure clock advances
+        const reaffirmConfig = await updateGlobalTradingCircuitBreakerConfig({
+          isHalted: true,
+          updatedBy: 'invariant_test_runner_reaffirm',
+        });
 
-      assert.strictEqual(reaffirmConfig.isHalted, true, 'Circuit breaker should remain halted');
-      assert.strictEqual(reaffirmConfig.haltedAt, originalHaltedAt, 'haltedAt timestamp must remain preserved across idempotent halts');
-      assert.strictEqual(reaffirmConfig.haltReason, testReason, 'haltReason must be preserved across idempotent halts');
-      console.log('  ✅ Case 2.3 Passed: Idempotent halt reaffirmed without corrupting original haltedAt timestamp');
+        assert.strictEqual(reaffirmConfig.isHalted, true, 'Circuit breaker should remain halted');
+        assert.strictEqual(reaffirmConfig.haltedAt, originalHaltedAt, 'haltedAt timestamp must remain preserved across idempotent halts');
+        assert.strictEqual(reaffirmConfig.haltReason, testReason, 'haltReason must be preserved across idempotent halts');
+        console.log('  [PASS] Case 2.3: Idempotent halt reaffirmed without corrupting original haltedAt timestamp');
+      } catch (err: any) {
+        console.error('  [FAIL] Group 2 Invariants execution failed:', err);
+        throw err;
+      }
     }
 
     // ------------------------------------------------------------------
@@ -107,26 +114,31 @@ async function runTests() {
     console.log('\n--- Group 3: Health-Gated Resume Invariants ---');
 
     if (!hasDb) {
-      console.log('  ⚠️ DATABASE_URL not set. Skipping live DB-dependent health-gated resume tests.');
+      console.log('  [SKIPPED_RUNTIME_ONLY] Case 3.1: Resume execution attempt when health gate passes or fails (Requires live DATABASE_URL)');
     } else {
-      // Case 3.1: Resume execution attempt when health gate passes or fails
       try {
-        const resumeResult = await resumeGlobalTradingWithHealthCheck({
-          updatedBy: 'invariant_test_runner',
-        });
-        assert.strictEqual(resumeResult.isHalted, false, 'Circuit breaker should be unhalted if health gates pass');
-        console.log('  ✅ Case 3.1 Passed: Resume succeeded after verifying health gates');
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        assert.ok(msg.includes('RESUME_GATE_FAILED') || msg.includes('Database') || msg.includes('Deriv'), 'Error must be a clear health gate failure');
-        console.log(`  ✅ Case 3.1 Passed: Safety health gate caught system constraint during resume test (${msg})`);
-      }
+        // Case 3.1: Resume execution attempt when health gate passes or fails
+        try {
+          const resumeResult = await resumeGlobalTradingWithHealthCheck({
+            updatedBy: 'invariant_test_runner',
+          });
+          assert.strictEqual(resumeResult.isHalted, false, 'Circuit breaker should be unhalted if health gates pass');
+          console.log('  [PASS] Case 3.1: Resume succeeded after verifying health gates');
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          assert.ok(msg.includes('RESUME_GATE_FAILED') || msg.includes('Database') || msg.includes('Deriv'), 'Error must be a clear health gate failure');
+          console.log(`  [PASS] Case 3.1: Safety health gate caught system constraint during resume test (${msg})`);
+        }
 
-      // Clean up test circuit breaker state back to normal
-      await updateGlobalTradingCircuitBreakerConfig({
-        isHalted: false,
-        updatedBy: 'invariant_test_runner_cleanup',
-      });
+        // Clean up test circuit breaker state back to normal
+        await updateGlobalTradingCircuitBreakerConfig({
+          isHalted: false,
+          updatedBy: 'invariant_test_runner_cleanup',
+        });
+      } catch (err: any) {
+        console.error('  [FAIL] Group 3 Invariants execution failed:', err);
+        throw err;
+      }
     }
 
     console.log('\n🎉 ALL TELEGRAM ADMIN CONTROL PLANE & CIRCUIT BREAKER INVARIANT TESTS PASSED SUCCESSFULLY!\n');

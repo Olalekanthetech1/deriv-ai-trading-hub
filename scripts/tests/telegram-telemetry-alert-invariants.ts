@@ -47,7 +47,7 @@ async function runTests() {
       `Privacy Violation: Operational summary must never contain raw user data reference "${pattern}".`
     );
   }
-  console.log('  ✅ Case 1.1 Passed: Operations summary contains strictly privacy-preserving aggregated telemetry.');
+  console.log('  [PASS] Case 1.1: Operations summary contains strictly privacy-preserving aggregated telemetry.');
 
 
   // 2. TEST GROUP 2: Alert Rules Engine Logic Constraints
@@ -56,13 +56,18 @@ async function runTests() {
   // Let's verify that the alert threshold conditions:
   // "Broker failure rate > 10% AND minimum executions >= 20" are correctly evaluated.
   if (sql) {
-    console.log('  Running active database telemetry evaluation rules check...');
-    const result = await evaluateTelemetryAlertRules(sql);
-    assert.strictEqual(typeof result.triggered, 'boolean');
-    assert.strictEqual(typeof result.alertSent, 'boolean');
-    console.log(`  ✅ Case 2.1 Passed: Telemetry evaluation completed without throwing (${JSON.stringify(result)})`);
+    try {
+      console.log('  Running active database telemetry evaluation rules check...');
+      const result = await evaluateTelemetryAlertRules(sql);
+      assert.strictEqual(typeof result.triggered, 'boolean');
+      assert.strictEqual(typeof result.alertSent, 'boolean');
+      console.log(`  [PASS] Case 2.1: Telemetry evaluation completed without throwing (${JSON.stringify(result)})`);
+    } catch (err: any) {
+      console.error('  [FAIL] Group 2 Invariant execution failed:', err);
+      throw err;
+    }
   } else {
-    console.log('  ⚠️ Skipping active database telemetry rules check (offline mode).');
+    console.log('  [SKIPPED_RUNTIME_ONLY] Case 2.1: Telemetry rules check (Requires live DATABASE_URL)');
   }
 
   console.log('\n🎉 ALL TELEGRAM PRIVACY-PRESERVING TELEMETRY & ALERT ENGINE INVARIANT TESTS PASSED!\n');
