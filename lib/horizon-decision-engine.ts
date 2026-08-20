@@ -129,8 +129,8 @@ function resolveDriftPenalty(primaryEnsemble: ProductionEnsembleResult, availabl
   return breached.length / availableModelCount;
 }
 
-export function evaluateHorizonDecisionSnapshot(params: { symbol: string; mode: HorizonDecisionMode; categoryFilter?: DurationSelectUnit | 'auto'; requestedDuration?: { value: number; unit: DurationSelectUnit }; primaryEnsemble: ProductionEnsembleResult; durationOptions?: DurationOption[]; prices?: number[]; }): HorizonDecisionSnapshot {
-  const { symbol, mode, categoryFilter, requestedDuration, primaryEnsemble, durationOptions, prices } = params;
+export function evaluateHorizonDecisionSnapshot(params: { symbol: string; mode: HorizonDecisionMode; categoryFilter?: DurationSelectUnit | 'auto'; requestedDuration?: { value: number; unit: DurationSelectUnit }; primaryEnsemble: ProductionEnsembleResult; durationOptions?: DurationOption[]; prices?: number[]; enforceRequestedDuration?: boolean; }): HorizonDecisionSnapshot {
+  const { symbol, mode, categoryFilter, requestedDuration, primaryEnsemble, durationOptions, prices, enforceRequestedDuration } = params;
   if (!symbol) throw new Error('SYMBOL_REQUIRED');
   const quality = verifyDataQuality(prices || []);
   const breakdown = primaryEnsemble.modelBreakdown as Record<string, any>;
@@ -148,7 +148,7 @@ export function evaluateHorizonDecisionSnapshot(params: { symbol: string; mode: 
 
   const candidates = getLiveCandidateHorizons(durationOptions || [], breakdown.horizons as Record<string, unknown>);
   let chosen: CandidateHorizon;
-  if (mode === 'manual') {
+  if (mode === 'manual' || enforceRequestedDuration) {
     if (!requestedDuration) throw new Error('REQUESTED_HORIZON_REQUIRED');
     const key = `${requestedDuration.value}${requestedDuration.unit}`;
     chosen = candidates.find((item) => item.key === key) || (() => { throw new Error('REQUESTED_HORIZON_NOT_IN_LIVE_ANALYSIS'); })();

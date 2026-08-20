@@ -123,6 +123,44 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
+    if (update.message && update.message.reply_to_message) {
+      const replyToMsgId = Number(update.message.reply_to_message.message_id);
+      const tickets = await sql`
+        SELECT * FROM telegram_support_tickets
+        WHERE admin_message_id = ${replyToMsgId}
+        LIMIT 1
+      `;
+      if (tickets.length > 0) {
+        const ticket = tickets[0];
+        const traderChatId = Number(ticket.chat_id);
+
+        try {
+          const { TelegramBotController } = await import('@/lib/telegram-trade-controller');
+          const traderBot = new TelegramBotController();
+          await traderBot.sendMessage(traderChatId,
+            `💬 *Response from Administrator:*\n\n` +
+            `"${text}"`
+          );
+
+          await controller.sendApi('sendMessage', {
+            chat_id: chatId!,
+            reply_to_message_id: update.message.message_id,
+            text: `✅ *Response delivered successfully to Trader \`${traderChatId}\`.*`,
+            parse_mode: 'Markdown',
+          });
+        } catch (deliveryErr) {
+          console.error('[Admin Support Reply Delivery Failure]:', deliveryErr);
+          await controller.sendApi('sendMessage', {
+            chat_id: chatId!,
+            reply_to_message_id: update.message.message_id,
+            text: `❌ *Failed to deliver response to Trader:* ${deliveryErr instanceof Error ? deliveryErr.message : 'Unknown error'}`,
+            parse_mode: 'Markdown',
+          });
+        }
+        return NextResponse.json({ ok: true });
+      }
+    }
+
     if (text === '/start' || text === '/admin' || text === '/status' || text === '/health') {
       await controller.renderHealthDashboard(chatId!);
       return NextResponse.json({ ok: true });

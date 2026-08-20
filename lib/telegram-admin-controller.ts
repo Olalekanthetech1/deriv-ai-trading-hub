@@ -316,4 +316,40 @@ export class TelegramAdminController {
       );
     }
   }
+
+  async forwardSupportTicketToAdmin(
+    traderChatId: number,
+    traderUsername: string | undefined,
+    traderFirstName: string | undefined,
+    text: string,
+    accountType: string
+  ): Promise<number | null> {
+    const alertChatId = process.env.ALERT_TELEGRAM_CHAT_ID?.trim();
+    if (!alertChatId) {
+      console.warn('[Admin Alert Bot] ALERT_TELEGRAM_CHAT_ID is not configured, cannot route support ticket');
+      return null;
+    }
+
+    const nameStr = traderFirstName ? `${traderFirstName}` : 'Anonymous';
+    const usernameStr = traderUsername ? ` (@${traderUsername})` : '';
+
+    const payloadText =
+      `🎫 *NEW SUPPORT TICKET*\n\n` +
+      `👤 *Trader:* ${nameStr}${usernameStr}\n` +
+      `🆔 *Trader ID:* \`${traderChatId}\`\n` +
+      `🎮 *Account:* \`${accountType.toUpperCase()}\`\n\n` +
+      `💬 *Message:*\n"${text}"\n\n` +
+      `✍️ _To reply, simply use Telegram's reply-to function directly on this message._`;
+
+    const res = await this.sendApi('sendMessage', {
+      chat_id: alertChatId,
+      text: payloadText,
+      parse_mode: 'Markdown',
+    });
+
+    if (res && res.ok && res.result && res.result.message_id) {
+      return Number(res.result.message_id);
+    }
+    return null;
+  }
 }

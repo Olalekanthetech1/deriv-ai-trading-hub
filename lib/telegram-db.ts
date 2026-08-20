@@ -56,6 +56,22 @@ export async function ensureTelegramSchema(sqlInstance?: any) {
       ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS language VARCHAR(16) NOT NULL DEFAULT 'en'
     `;
 
+    // Ensure support_state column exists
+    await sql`
+      ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS support_state VARCHAR(64) NOT NULL DEFAULT 'idle'
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS telegram_support_tickets (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        chat_id BIGINT NOT NULL REFERENCES telegram_users(chat_id) ON DELETE CASCADE,
+        message_id BIGINT NOT NULL,
+        admin_message_id BIGINT,
+        status VARCHAR(32) NOT NULL DEFAULT 'open',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+
     await sql`
       CREATE TABLE IF NOT EXISTS telegram_trade_logs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

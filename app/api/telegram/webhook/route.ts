@@ -43,6 +43,32 @@ export async function POST(req: NextRequest) {
       const text = String(msg.text || '').trim();
       const fromUser = msg.from || {};
 
+      const user = await bot.getUser(chatId);
+
+      if (user && user.support_state === 'awaiting_message') {
+        const { TelegramAdminController } = await import('@/lib/telegram-admin-controller');
+        const adminController = new TelegramAdminController();
+        const adminMessageId = await adminController.forwardSupportTicketToAdmin(
+          chatId,
+          fromUser.username,
+          fromUser.first_name,
+          text,
+          user.account_type
+        );
+
+        if (adminMessageId) {
+          await bot.createSupportTicket(chatId, msg.message_id, adminMessageId);
+        }
+
+        await bot.updateUser(chatId, { support_state: 'idle' });
+        await bot.sendMessage(chatId,
+          `✅ *SUPPORT TICKET SUBMITTED*\n\n` +
+          `Your message was successfully routed to our administrator support channel.\n\n` +
+          `An administrator will review your request and reply directly in this chat shortly. Thank you!`
+        );
+        return NextResponse.json({ ok: true });
+      }
+
       if (text.startsWith('/start pair_')) {
         const pairingCode = text.replace('/start pair_', '').trim();
         await bot.handlePairingCode(chatId, pairingCode, fromUser);
@@ -50,7 +76,6 @@ export async function POST(req: NextRequest) {
       }
 
       if (text === '/start') {
-        const user = await bot.getUser(chatId);
         if (user) {
           await bot.renderMainTerminal(chatId);
         } else {
@@ -215,6 +240,10 @@ export async function POST(req: NextRequest) {
         await bot.renderUnlinkedScreen(chatId);
       } else if (data === 'nav_faq') {
         await bot.renderFaqScreen(chatId, messageId);
+      } else if (data === 'nav_support_contact') {
+        await bot.renderSupportContactPrompt(chatId, messageId);
+      } else if (data === 'cancel_support') {
+        await bot.handleCancelSupport(chatId, messageId);
       }
 
       return NextResponse.json({ ok: true });

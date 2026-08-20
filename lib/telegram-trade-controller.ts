@@ -15,6 +15,10 @@ import {
 const TELEGRAM_API_BASE = 'https://api.telegram.org/bot';
 const VALID_STAKES = new Set([1, 5, 10, 25, 50]);
 
+function escapeMarkdown(text: string): string {
+  return text.replace(/([_*\[`])/g, '\\$1');
+}
+
 type LiveSignal = {
   prediction: {
     signal: 'CALL' | 'PUT';
@@ -54,6 +58,7 @@ export interface TelegramUserRecord {
   max_trades: number;
   is_autotrading: boolean;
   language: string;
+  support_state?: string;
 }
 
 function formatBrokerExecutionError(err: unknown): string {
@@ -240,6 +245,9 @@ export class TelegramBotController {
     if (updates.language !== undefined) {
       await sql`UPDATE telegram_users SET language = ${updates.language}, updated_at = NOW() WHERE chat_id = ${chatId}`;
     }
+    if (updates.support_state !== undefined) {
+      await sql`UPDATE telegram_users SET support_state = ${updates.support_state}, updated_at = NOW() WHERE chat_id = ${chatId}`;
+    }
   }
 
   private async requestLiveSignal(
@@ -250,6 +258,8 @@ export class TelegramBotController {
     const allowed = authorizedSymbols ?? new Set((await this.getAuthoritativeTelegramSymbols()).map((item) => item.symbol));
     if (!allowed.has(symbol)) throw new Error('UNSUPPORTED_TELEGRAM_SYMBOL');
 
+    const isAuto = user.active_duration_unit === 'auto';
+
     const response = await fetch(`${this.getInternalBaseUrl()}/api/signals/predict`, {
       method: 'POST',
       headers: {
@@ -258,10 +268,10 @@ export class TelegramBotController {
       },
       body: JSON.stringify({
         symbol,
-        durationValue: user.active_duration_value,
-        durationUnit: user.active_duration_unit,
-        isAutoDuration: true,
-        mode: 'auto',
+        durationValue: isAuto ? 5 : user.active_duration_value,
+        durationUnit: isAuto ? 't' : user.active_duration_unit,
+        isAutoDuration: isAuto,
+        mode: isAuto ? 'auto' : 'manual',
         autoHorizonMode: 'auto',
       }),
     });
@@ -285,10 +295,11 @@ export class TelegramBotController {
 
   async renderUnlinkedScreen(chatId: number, firstName?: string) {
     const webUrl = process.env.APP_URL || 'https://deriv-trading.app';
+    const escapedName = escapeMarkdown(firstName || 'Trader');
     await this.safeSendApi('sendMessage', {
       chat_id: chatId,
       text:
-        `👋 *Welcome ${firstName || 'Trader'} to Deriv AI Terminal*\n\n` +
+        `👋 *Welcome ${escapedName} to Deriv AI Terminal*\n\n` +
         `Your intelligent microstructure trading terminal powered by the production signal pipeline.\n\n` +
         `⚠️ *No Account Connected*\nConnect your Deriv account from the Web App to begin.`,
       parse_mode: 'Markdown',
@@ -481,7 +492,7 @@ export class TelegramBotController {
     const finalMessageText =
       `📊 *CHOOSE TRADING ASSET*\n` +
       `_Select your preferred market asset_\n\n` +
-      `🏆 *Bot Prediction:* _(Freshness: ${dataAgeSec}s, ${rankingSnapshot.modelVersion || 'v2-production'})_\n` +
+      `🏆 *Bot Prediction:* _(Freshness: ${dataAgeSec}s, \`${rankingSnapshot.modelVersion || 'v2-production'}\`)_\n` +
       `Highest chance to win right now:\n` +
       `${leaderboardLines}\n` +
       `📌 *Make your choice below*`;
@@ -814,6 +825,9 @@ export class TelegramBotController {
     const modeText = user.is_autotrading ? '🟢 AUTOTRADE ACTIVE' : '🔴 MANUAL ONLY';
     const langLabel = user.language === 'es' ? 'Español 🇪🇸' : user.language === 'fr' ? 'Français 🇫🇷' : 'English 🇺🇸';
 
+    const isAuto = user.active_duration_unit === 'auto';
+    const durationLabel = isAuto ? '🤖 Auto (AI Optimal)' : `${user.active_duration_value} ${user.active_duration_unit.toUpperCase()}`;
+
     await this.safeSendApi('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
@@ -824,7 +838,7 @@ export class TelegramBotController {
         `🎯 *Autotrade Settings*\n` +
         `Fine-tune the bot to match your style — full control at your fingertips.\n\n` +
         `⏳ *Expiration Time*\n` +
-        `Decide when your trades close (Current: \`${user.active_duration_value} ${user.active_duration_unit.toUpperCase()}\`).\n\n` +
+        `Decide when your trades close (Current: \`${durationLabel}\`).\n\n` +
         `🛠️ *Mode Selection*\n` +
         `Switch between Manual and Autotrade anytime (Current: \`${modeText}\`).\n\n` +
         `🌐 *Language*\n` +
@@ -1006,15 +1020,24 @@ export class TelegramBotController {
   }
 
   async renderDurationMenu(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    const currentText = user && user.active_duration_unit === 'auto'
+      ? '🤖 Auto (AI Optimal)'
+      : user
+      ? `${user.active_duration_value} ${user.active_duration_unit.toUpperCase()}`
+      : 'Unknown';
+
     await this.safeSendApi('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text:
         `⏱ *EXPIRATION TIME SETTINGS*\n\n` +
-        `The selected duration is passed to the authoritative horizon engine; the live execution horizon is still re-evaluated before trade.` ,
+        `Current Setting: \`${currentText}\`\n\n` +
+        `Select your preferred trade expiration. Selecting a specific duration locks execution strictly to that choice. Selecting Auto lets the production AI ensemble dynamically optimize expiration for maximum confidence.`,
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
+          [{ text: '🤖 Auto (AI Optimal)', callback_data: 'set_dur_0_auto' }],
           [{ text: '5 Ticks', callback_data: 'set_dur_5_t' }, { text: '10 Ticks', callback_data: 'set_dur_10_t' }],
           [{ text: '15 Seconds', callback_data: 'set_dur_15_s' }, { text: '30 Seconds', callback_data: 'set_dur_30_s' }, { text: '60 Seconds', callback_data: 'set_dur_60_s' }],
           [{ text: '🔙 Back to Settings', callback_data: 'menu_settings' }],
@@ -1028,15 +1051,54 @@ export class TelegramBotController {
       chat_id: chatId,
       text:
         `📖 *DERIV TRADING TERMINAL — FAQ*\n\n` +
-        `1️⃣ *How does this bot work?*\nIt obtains live predictions from the production ensemble, validates the authoritative horizon, and only then sends a Deriv proposal/buy request.\n\n` +
-        `2️⃣ *How are credentials stored?*\nDeriv credentials are encrypted at rest with AES-256-GCM. TELEGRAM_AUTH_SECRET is mandatory; there is no hardcoded fallback key.\n\n` +
-        `3️⃣ *Can I switch between Demo and Real?*\nYes. The account is re-resolved against the verified Deriv credential each time.\n\n` +
-        `4️⃣ *Are Telegram signals hardcoded?*\nNo. Signal cards and execution use fresh production API predictions and authoritative horizon decisions.`,
+        `🧠 *1️⃣ How does this bot work?*\n` +
+        `The bot obtains live predictions from our production market microstructure pipeline, verifies the authoritative horizon alignment, and executes trade proposals when pre-trade criteria are fully met.\n\n` +
+        `🔒 *2️⃣ How are my credentials stored?*\n` +
+        `Your Deriv credentials are encrypted at rest with industry-standard cryptographic protection and are never displayed in plain text in your Telegram interface.\n\n` +
+        `🔄 *3️⃣ Can I switch between Demo and Real accounts?*\n` +
+        `Yes. Switch account modes using the \`🎮 Demo / Real\` toggle. The bot dynamically re-resolves and connects to your respective Demo or Real account with the broker.\n\n` +
+        `🤖 *4️⃣ Auto vs. Manual Expiration: What's the difference?*\n` +
+        `• \`Auto (AI Optimal)\`: The system evaluates the currently eligible, validated trading horizons and selects the horizon that best fits current market conditions and available model evidence.\n` +
+        `• \`Manual Select\`: Overrides the AI selection and strictly locks your trade execution to your chosen duration (e.g., 5 Ticks or 60 Seconds).\n\n` +
+        `💬 *5️⃣ How does the Live Support system work?*\n` +
+        `When you click **Live Support** below and type your message, your inquiry is securely routed to our administrator support channel, allowing our team to reply to your ticket directly in this chat.`,
       parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: [[{ text: '🏠 Back to Main Menu', callback_data: 'nav_main_menu' }]] },
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '💬 Live Support', callback_data: 'nav_support_contact' }],
+          [{ text: '🏠 Back to Main Menu', callback_data: 'nav_main_menu' }]
+        ]
+      },
     };
 
     await this.safeSendApi(messageId ? 'editMessageText' : 'sendMessage', messageId ? { ...payload, message_id: messageId } : payload);
+  }
+
+  async renderSupportContactPrompt(chatId: number, messageId?: number) {
+    await this.updateUser(chatId, { support_state: 'awaiting_message' });
+
+    const payload = {
+      chat_id: chatId,
+      text:
+        `💬 *LIVE SUPPORT CHANNEL*\n\n` +
+        `Your message will be sent directly to our Administrator team for live routing and response.\n\n` +
+        `📝 *How to proceed:*\n` +
+        `Simply type your support question, details, or feedback below and press *Send*.\n\n` +
+        `⚠️ _To cancel and return, please click the button below._`,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '❌ Cancel & Back', callback_data: 'cancel_support' }]
+        ]
+      }
+    };
+
+    await this.safeSendApi(messageId ? 'editMessageText' : 'sendMessage', messageId ? { ...payload, message_id: messageId } : payload);
+  }
+
+  async handleCancelSupport(chatId: number, messageId?: number) {
+    await this.updateUser(chatId, { support_state: 'idle' });
+    await this.renderFaqScreen(chatId, messageId);
   }
 
   async handlePairingCode(chatId: number, pairingCode: string, fromUser: any) {
@@ -1124,6 +1186,23 @@ export class TelegramBotController {
           [{ text: '🏠 Main Dashboard', callback_data: 'nav_main_menu' }],
         ],
       },
+    });
+  }
+
+  async createSupportTicket(chatId: number, messageId: number, adminMessageId: number) {
+    const sql = await this.getSql();
+    if (!sql) return;
+    await sql`
+      INSERT INTO telegram_support_tickets (chat_id, message_id, admin_message_id)
+      VALUES (${chatId}, ${messageId}, ${adminMessageId})
+    `;
+  }
+
+  async sendMessage(chatId: number, text: string) {
+    return this.safeSendApi('sendMessage', {
+      chat_id: chatId,
+      text,
+      parse_mode: 'Markdown',
     });
   }
 }

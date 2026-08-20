@@ -207,6 +207,7 @@ export async function POST(req: NextRequest) {
       primaryEnsemble: predictionEnsemble,
       durationOptions,
       prices: tickList.map((tick) => tick.price),
+      enforceRequestedDuration: true,
     });
     const finalHorizon = horizonFromDecision(decisionSnapshot.decision.horizon);
     if (!sameHorizon(selectedHorizon, finalHorizon)) throw new Error('HORIZON_ALIGNMENT_FAILED');

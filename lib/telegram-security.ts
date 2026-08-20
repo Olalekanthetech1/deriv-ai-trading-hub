@@ -47,7 +47,7 @@ export function requireTelegramAdminSecret(req: NextRequest): void {
 }
 
 export function getAuthorizedAlertChatId(): number | null {
-  const raw = process.env.ALERT_TELEGRAM_CHAT_ID?.trim();
+  const raw = process.env.ALERT_TELEGRAM_CHAT_ID?.trim()?.replace(/['"\s]/g, '');
   if (!raw) return null;
   const num = Number(raw);
   return Number.isSafeInteger(num) ? num : null;
@@ -59,9 +59,9 @@ export function getAuthorizedAdminUserIds(): Set<number> {
   if (!raw) return set;
 
   for (const item of raw.split(',')) {
-    const trimmed = item.trim();
-    if (trimmed) {
-      const num = Number(trimmed);
+    const sanitized = item.replace(/['"\s]/g, '');
+    if (sanitized) {
+      const num = Number(sanitized);
       if (Number.isSafeInteger(num) && num > 0) {
         set.add(num);
       }
@@ -101,10 +101,13 @@ export function verifyTelegramAdminAuthorization(params: {
 
   const authorizedChatId = getAuthorizedAlertChatId();
   if (authorizedChatId !== null && params.chatId !== authorizedChatId) {
-    return {
-      authorized: false,
-      reason: 'UNAUTHORIZED_TELEGRAM_ALERT_CHAT',
-    };
+    const isDirectPrivateMessageFromAdmin = params.chatId === params.userId && adminUserIds.has(params.userId);
+    if (!isDirectPrivateMessageFromAdmin) {
+      return {
+        authorized: false,
+        reason: 'UNAUTHORIZED_TELEGRAM_ALERT_CHAT',
+      };
+    }
   }
 
   return { authorized: true };
