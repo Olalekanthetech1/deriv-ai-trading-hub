@@ -1,3 +1,4 @@
+import { TelegramAssets } from "./telegram-assets";
 import { DerivAuthenticatedClient } from './deriv-server-client';
 import { fetchDerivTickHistory } from '@/lib/ticks-helper';
 import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';
@@ -187,6 +188,55 @@ export class TelegramBotController {
       return null;
     }
   }
+
+  async sendRichMessage(chatId: number, messageId: number | undefined, photoUrl: string | null, text: string, keyboard: any) {
+    let success = false;
+    if (photoUrl) {
+      if (messageId) {
+        const editRes = await this.safeSendApi('editMessageCaption', {
+          chat_id: chatId,
+          message_id: messageId,
+          caption: text,
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+        if (editRes && editRes.ok) {
+          success = true;
+        } else {
+          await this.safeSendApi('deleteMessage', { chat_id: chatId, message_id: messageId });
+          const sendRes = await this.safeSendApi('sendPhoto', {
+            chat_id: chatId,
+            photo: photoUrl,
+            caption: text,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+          });
+          if (sendRes && sendRes.ok) success = true;
+        }
+      } else {
+        const sendRes = await this.safeSendApi('sendPhoto', {
+          chat_id: chatId,
+          photo: photoUrl,
+          caption: text,
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+        if (sendRes && sendRes.ok) success = true;
+      }
+    }
+
+    if (!success) {
+      const method = (messageId && !photoUrl) ? 'editMessageText' : 'sendMessage';
+      await this.safeSendApi(method, {
+        chat_id: chatId,
+        ...(method === 'editMessageText' ? { message_id: messageId } : {}),
+        text,
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+    }
+  }
+
 
   private async getSql() {
     const dbUrl = getDbConnectionString();
@@ -424,8 +474,7 @@ export class TelegramBotController {
       ],
     };
 
-    const appUrl = process.env.APP_URL ? (process.env.APP_URL.endsWith('/') ? process.env.APP_URL.slice(0, -1) : process.env.APP_URL) : null;
-    const photoUrl = appUrl ? `${appUrl}/telegram-assets/main-menu.png` : null;
+    const photoUrl = TelegramAssets.mainMenu;
     let success = false;
 
     if (photoUrl) {
@@ -691,13 +740,52 @@ export class TelegramBotController {
         ],
       };
 
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
-        text,
-        parse_mode: 'Markdown',
-        reply_markup: keyboard,
-      });
+      const photoUrl = signal.prediction.signal === 'CALL' ? TelegramAssets.bullish : TelegramAssets.bearish;
+      let success = false;
+      if (photoUrl) {
+        if (messageId) {
+          const editRes = await this.safeSendApi('editMessageCaption', {
+            chat_id: chatId,
+            message_id: messageId,
+            caption: text,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+          });
+          if (editRes && editRes.ok) {
+            success = true;
+          } else {
+            await this.safeSendApi('deleteMessage', { chat_id: chatId, message_id: messageId });
+            const sendRes = await this.safeSendApi('sendPhoto', {
+              chat_id: chatId,
+              photo: photoUrl,
+              caption: text,
+              parse_mode: 'Markdown',
+              reply_markup: keyboard,
+            });
+            if (sendRes && sendRes.ok) success = true;
+          }
+        } else {
+          const sendRes = await this.safeSendApi('sendPhoto', {
+            chat_id: chatId,
+            photo: photoUrl,
+            caption: text,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+          });
+          if (sendRes && sendRes.ok) success = true;
+        }
+      }
+
+      if (!success) {
+        const method = (messageId && !photoUrl) ? 'editMessageText' : 'sendMessage';
+        await this.safeSendApi(method, {
+          chat_id: chatId,
+          ...(method === 'editMessageText' ? { message_id: messageId } : {}),
+          text,
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+      }
     } catch (err) {
       const code = err instanceof Error ? err.message : 'AI_SIGNAL_UNAVAILABLE';
       await this.safeSendApi('editMessageText', {
@@ -783,6 +871,7 @@ export class TelegramBotController {
     let totalNetProfit = 0;
     let finalBalance: any = null;
     let anyTradeExecuted = false;
+    let balanceExpired = false;
 
     await this.safeSendApi('editMessageText', {
       chat_id: chatId,
@@ -886,8 +975,15 @@ export class TelegramBotController {
             break;
           } else {
             currentStake = currentStake * scalingFactor;
+            if (step < maxSteps) {
+              if (currentStake > Number(finalBalance.balance)) {
+                balanceExpired = true;
+                break;
+              }
+            }
           }
         }
+        if (balanceExpired) break;
       }
 
       await updateTelegramTradeIntent(sql, idempotencyKey, 'completed');
@@ -906,18 +1002,32 @@ export class TelegramBotController {
           `Balance: ${Number(finalBalance.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${finalBalance.currency}\n\n` +
           `Choose your next step...`;
 
-        await this.safeSendApi('editMessageText', {
-          chat_id: chatId,
-          message_id: messageId,
-          text: finalMessage,
-          parse_mode: 'Markdown',
-          reply_markup: {
+        let photoAsset = null;
+        if (balanceExpired) {
+          photoAsset = TelegramAssets.balanceExpired;
+        } else if (totalNetProfit > 0) {
+          photoAsset = TelegramAssets.profit;
+        } else if (totalNetProfit < 0) {
+          photoAsset = TelegramAssets.lost;
+        }
+
+        let keyboard = {
+          inline_keyboard: [
+            [{ text: '🚀 New Trade', callback_data: 'menu_start_trade' }],
+            [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
+          ],
+        };
+        
+        if (balanceExpired) {
+          keyboard = {
             inline_keyboard: [
-              [{ text: '🚀 New Trade', callback_data: 'menu_start_trade' }],
+              [{ text: '💰 Deposit', callback_data: 'menu_deposit' }],
               [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
             ],
-          },
-        });
+          };
+        }
+
+        await this.sendRichMessage(chatId, messageId, photoAsset, finalMessage, keyboard);
       }
 
     } catch (err) {
@@ -963,18 +1073,14 @@ export class TelegramBotController {
       }
     }
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
-      text:
+    const text = 
         `👤 *MY ACCOUNT*\n\n` +
         `🎮 *Trading Mode:* \`${user.account_type.toUpperCase()}\`\n` +
         `📧 *Login ID:* \`${user.account_id}\`\n` +
         `📬 *Email:* \`${emailStr}\`\n` +
         `💵 *Active Balance:* *${balanceStr}*\n` +
-        `⚙️ *Risk Scaling:* \`${user.scaling_factor}x (Max ${user.max_steps} Steps)\``,
-      parse_mode: 'Markdown',
-      reply_markup: {
+        `⚙️ *Risk Scaling:* \`${user.scaling_factor}x (Max ${user.max_steps} Steps)\``;
+    const keyboard = {
         inline_keyboard: [
           [{ text: '💰 Deposit', callback_data: 'menu_deposit' }],
           [
@@ -987,8 +1093,8 @@ export class TelegramBotController {
           ],
           [{ text: '⬅️ Main menu', callback_data: 'nav_main_menu' }],
         ],
-      },
-    });
+      };
+    await this.sendRichMessage(chatId, messageId, TelegramAssets.myAccount, text, keyboard);
   }
 
   async renderWithdrawalScreen(chatId: number, messageId: number) {
@@ -1019,10 +1125,7 @@ export class TelegramBotController {
     const isAuto = user.active_duration_unit === 'auto';
     const durationLabel = isAuto ? '🤖 Auto (AI Optimal)' : `${user.active_duration_value} ${user.active_duration_unit.toUpperCase()}`;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
-      text:
+    const text = 
         `⚙️ *SETTINGS*\n` +
         `_Configure your preferences and options_\n\n` +
         `⚙️ *Trading Options*\n\n` +
@@ -1033,9 +1136,8 @@ export class TelegramBotController {
         `🛠️ *Mode Selection*\n` +
         `Switch between Manual and Autotrade anytime (Current: \`${modeText}\`).\n\n` +
         `🌐 *Language*\n` +
-        `Select your preferred interface language (Current: \`${langLabel}\`).`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+        `Select your preferred interface language (Current: \`${langLabel}\`).`;
+    const keyboard = {
         inline_keyboard: [
           [{ text: '🎯 Autotrade Settings', callback_data: 'set_autotrade_settings_menu' }],
           [{ text: '⏳ Expiration Time', callback_data: 'set_duration_menu' }],
@@ -1043,8 +1145,8 @@ export class TelegramBotController {
           [{ text: '🌐 Language', callback_data: 'set_language_menu' }],
           [{ text: '🔙 Back', callback_data: 'nav_main_menu' }],
         ],
-      },
-    });
+      };
+    await this.sendRichMessage(chatId, messageId, TelegramAssets.settings, text, keyboard);
   }
 
   async renderAutotradeSettingsMenu(chatId: number, messageId: number) {
