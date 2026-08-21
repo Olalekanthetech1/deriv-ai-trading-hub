@@ -46,6 +46,7 @@ export async function ensureTelegramSchema(sqlInstance?: any) {
         max_trades INTEGER NOT NULL DEFAULT 5,
         is_autotrading BOOLEAN NOT NULL DEFAULT FALSE,
         language VARCHAR(16) NOT NULL DEFAULT 'en',
+        strategy_session_mode VARCHAR(32) NOT NULL DEFAULT 'hybrid',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
@@ -54,6 +55,11 @@ export async function ensureTelegramSchema(sqlInstance?: any) {
     // Ensure language column exists for legacy databases
     await sql`
       ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS language VARCHAR(16) NOT NULL DEFAULT 'en'
+    `;
+
+    // Ensure strategy_session_mode column exists for legacy databases
+    await sql`
+      ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS strategy_session_mode VARCHAR(32) NOT NULL DEFAULT 'hybrid'
     `;
 
     // Ensure support_state column exists

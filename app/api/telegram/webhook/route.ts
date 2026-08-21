@@ -183,6 +183,12 @@ export async function POST(req: NextRequest) {
         await bot.renderSettingsScreen(chatId, messageId);
       } else if (data === 'set_autotrade_settings_menu') {
         await bot.renderAutotradeSettingsMenu(chatId, messageId);
+      } else if (data === 'set_session_mode_menu') {
+        await bot.renderStrategySessionModeMenu(chatId, messageId);
+      } else if (data === 'set_mode_hybrid' || data === 'set_mode_adaptive' || data === 'set_mode_locked') {
+        const mode = data.replace('set_mode_', '');
+        await bot.updateUser(chatId, { strategy_session_mode: mode });
+        await bot.renderStrategySessionModeMenu(chatId, messageId);
       } else if (data === 'set_language_menu') {
         await bot.renderLanguageMenu(chatId, messageId);
       } else if (data === 'toggle_autotrade') {

@@ -92,6 +92,9 @@ export function AiTraderControls({
 }: AiTraderControlsProps) {
   const [numTrades, setNumTrades] = useState<number>(10);
   const [strategy, setStrategy] = useState<string>('Flat Staking');
+  const [sessionExecutionMode, setSessionExecutionMode] = useState<'hybrid' | 'adaptive' | 'locked'>('hybrid');
+  const recoveryChainDirectionRef = useRef<Direction | null>(null);
+  const recoveryChainHorizonRef = useRef<{ duration: number; unit: DurationSelectUnit } | null>(null);
   const [lastDecisionSnapshot, setLastDecisionSnapshot] = useState<HorizonDecisionSnapshot | null>(decisionSnapshot);
   const decisionSnapshotRef = useRef<HorizonDecisionSnapshot | null>(decisionSnapshot);
   const pricesRef = useRef<number[] | undefined>(prices);
@@ -249,14 +252,48 @@ export function AiTraderControls({
       }
 
       const decision = data.decisionSnapshot?.decision;
-      const targetDirection: Direction = data.prediction?.signal === 'PUT' || decision?.direction === 'FALL' ? 'PUT' : 'CALL';
+      const rawAiDirection: Direction = data.prediction?.signal === 'PUT' || decision?.direction === 'FALL' ? 'PUT' : 'CALL';
+      const isRecoveryStep = (stakingStateRef.current?.sequenceTrades || 0) > 0;
+
+      let effectiveDirection: Direction;
+      let effectiveDuration: number;
+      let effectiveUnit: DurationSelectUnit;
+      let modeBadge = '';
+
+      if (!isRecoveryStep || tradeNumber === 1) {
+        // Base Trade in Sequence
+        effectiveDirection = rawAiDirection;
+        effectiveDuration = Number(executionPlan.selectedHorizon.value);
+        effectiveUnit = executionPlan.selectedHorizon.unit as DurationSelectUnit;
+        recoveryChainDirectionRef.current = effectiveDirection;
+        recoveryChainHorizonRef.current = { duration: effectiveDuration, unit: effectiveUnit };
+        modeBadge = '[Base]';
+      } else {
+        // Recovery Step (sequenceTrades > 0)
+        if (sessionExecutionMode === 'locked' && recoveryChainDirectionRef.current && recoveryChainHorizonRef.current) {
+          effectiveDirection = recoveryChainDirectionRef.current;
+          effectiveDuration = recoveryChainHorizonRef.current.duration;
+          effectiveUnit = recoveryChainHorizonRef.current.unit;
+          modeBadge = `[Locked ${effectiveDirection}]`;
+        } else if (sessionExecutionMode === 'adaptive') {
+          effectiveDirection = rawAiDirection;
+          effectiveDuration = Number(executionPlan.selectedHorizon.value);
+          effectiveUnit = executionPlan.selectedHorizon.unit as DurationSelectUnit;
+          modeBadge = `[Adaptive ${effectiveDirection}]`;
+        } else {
+          // Hybrid Mode (Default): Lock direction to avoid whipsaws, use AI dynamic horizon
+          effectiveDirection = recoveryChainDirectionRef.current || rawAiDirection;
+          effectiveDuration = Number(executionPlan.selectedHorizon.value);
+          effectiveUnit = executionPlan.selectedHorizon.unit as DurationSelectUnit;
+          modeBadge = `[Hybrid ${effectiveDirection}]`;
+        }
+      }
+
       const confidence = Number(data.prediction?.confidence ?? decision?.calibratedProbability ?? decision?.confidence ?? 0);
-      const targetDuration = Number(executionPlan.selectedHorizon.value);
-      const targetUnit = executionPlan.selectedHorizon.unit as DurationSelectUnit;
       const horizonLabel = executionPlan.selectedHorizon.label;
 
-      if (onDurationChange && targetDuration !== durationRef.current) onDurationChange(targetDuration);
-      if (onDurationUnitChange && targetUnit !== durationUnitRef.current) onDurationUnitChange(targetUnit);
+      if (onDurationChange && effectiveDuration !== durationRef.current) onDurationChange(effectiveDuration);
+      if (onDurationUnitChange && effectiveUnit !== durationUnitRef.current) onDurationUnitChange(effectiveUnit);
 
       tradeStrategyStore.setStrategy('Horizon Decision Engine · Server Execution Plan');
 
@@ -267,7 +304,7 @@ export function AiTraderControls({
       }
 
       const currentStake = stakingStateRef.current.currentStake;
-      const buyRes = await onBuy(targetDirection, { duration: targetDuration, durationUnit: targetUnit, stake: currentStake, executionPlanId: executionPlan.executionPlanId });
+      const buyRes = await onBuy(effectiveDirection, { duration: effectiveDuration, durationUnit: effectiveUnit, stake: currentStake, executionPlanId: executionPlan.executionPlanId });
 
       if (!buyRes?.contractId) {
         throw new Error('Failed to retrieve contract ID from execution.');
@@ -275,10 +312,10 @@ export function AiTraderControls({
 
       setExecutionStats((prev) => ({ ...prev, executed: prev.executed + 1 }));
       setLastExecution(
-        `Trade #${tradeNumber} (EXECUTED: ${targetDirection} | Conf: ${formattedConf}% | Stake: $${currentStake} | Plan: ${executionPlan.executionPlanId})`
+        `Trade #${tradeNumber} (EXECUTED: ${effectiveDirection} ${modeBadge} | Conf: ${formattedConf}% | Stake: $${currentStake} | Plan: ${executionPlan.executionPlanId})`
       );
-      toast.success(`AI Trade #${tradeNumber} Executed`, {
-        description: `Direction: ${targetDirection} | Stake: $${currentStake} | Server Horizon: ${horizonLabel}`,
+      toast.success(`AI Trade #${tradeNumber} Executed ${modeBadge}`, {
+        description: `Direction: ${effectiveDirection} | Stake: $${currentStake} | Horizon: ${effectiveDuration}${effectiveUnit}`,
       });
 
       const settledContract = await waitForContractSettlement(ws, buyRes.contractId);
@@ -304,10 +341,10 @@ export function AiTraderControls({
         body: JSON.stringify({
           tradeId: String(settledContract?.contract_id || `TR-${Date.now()}`),
           symbol: symbolKey,
-          horizonKey: `${targetDuration}${targetUnit}`,
-          horizonValue: targetDuration,
-          horizonUnit: targetUnit,
-          direction: targetDirection,
+          horizonKey: `${effectiveDuration}${effectiveUnit}`,
+          horizonValue: effectiveDuration,
+          horizonUnit: effectiveUnit,
+          direction: effectiveDirection,
           entryPrice: entryPriceVal,
           exitPrice: exitPriceVal,
           outcome: isWin ? 'WIN' : 'LOSS',
@@ -607,7 +644,7 @@ export function AiTraderControls({
         </div>
 
         <div className="space-y-1.5">
-          <Label className="text-xs font-medium text-muted-foreground">Strategy</Label>
+          <Label className="text-xs font-medium text-muted-foreground">Staking Mode</Label>
           <Select disabled={isRunning} value={strategy} onValueChange={setStrategy}>
             <SelectTrigger className="h-10 rounded-xl bg-card border-border text-xs font-medium"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -619,6 +656,23 @@ export function AiTraderControls({
             </SelectContent>
           </Select>
         </div>
+      </div>
+
+      <div className="space-y-1.5 pt-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs font-medium text-muted-foreground">Recovery Sequence Mode</Label>
+          <span className="text-[10px] text-primary/80 font-mono">
+            {sessionExecutionMode === 'hybrid' ? 'Step Direction Lock' : sessionExecutionMode === 'adaptive' ? 'Full Dynamic' : 'Total Lock'}
+          </span>
+        </div>
+        <Select disabled={isRunning} value={sessionExecutionMode} onValueChange={(val: any) => setSessionExecutionMode(val)}>
+          <SelectTrigger className="h-10 rounded-xl bg-card border-border text-xs font-medium"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="hybrid">Hybrid (Lock Direction on Recovery, Dynamic Horizon) ⭐</SelectItem>
+            <SelectItem value="adaptive">Adaptive (Full Dynamic Signal on Every Step)</SelectItem>
+            <SelectItem value="locked">Locked (Fixed Direction & Horizon for Entire Chain)</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px] leading-relaxed text-amber-200/80">

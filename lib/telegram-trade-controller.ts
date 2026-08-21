@@ -166,6 +166,7 @@ export interface TelegramUserRecord {
   max_trades: number;
   is_autotrading: boolean;
   language: string;
+  strategy_session_mode?: string;
   support_state?: string;
 }
 
@@ -623,6 +624,9 @@ export class TelegramBotController {
     }
     if (updates.language !== undefined) {
       await sql`UPDATE telegram_users SET language = ${updates.language}, updated_at = NOW() WHERE chat_id = ${chatId}`;
+    }
+    if (updates.strategy_session_mode !== undefined) {
+      await sql`UPDATE telegram_users SET strategy_session_mode = ${updates.strategy_session_mode}, updated_at = NOW() WHERE chat_id = ${chatId}`;
     }
     if (updates.support_state !== undefined) {
       await sql`UPDATE telegram_users SET support_state = ${updates.support_state}, updated_at = NOW() WHERE chat_id = ${chatId}`;
@@ -1224,8 +1228,13 @@ export class TelegramBotController {
       const targetAccountId = await this.resolveTargetAccountId(client, user, chatId);
       await client.connect(targetAccountId);
 
+      let baseTradeSignal = initialSignal;
+      const sessionMode = user.strategy_session_mode || 'hybrid';
+
       for (let tradeIdx = 1; tradeIdx <= maxTrades; tradeIdx++) {
         let currentStake = normalizedStake;
+        let recoveryChainDirection: 'CALL' | 'PUT' | null = null;
+        let recoveryChainHorizon: { value: number; unit: string; label: string } | null = null;
 
         for (let step = 1; step <= maxSteps; step++) {
           activeStep = step;
@@ -1247,8 +1256,49 @@ export class TelegramBotController {
           }
 
           anyTradeExecuted = true;
+
+          let signal: LiveSignal;
+          let contractType: 'CALL' | 'PUT';
+          let selectedHorizon: { value: number; unit: string; label: string };
+          let stepBadge = '';
+
+          if (step === 1) {
+            // Step 1: Base trade in a sequence
+            if (tradeIdx === 1) {
+              signal = initialSignal;
+            } else {
+              signal = await this.requestLiveSignal(user, symbol);
+              baseTradeSignal = signal;
+            }
+            contractType = signal.prediction.signal === 'CALL' ? 'CALL' : 'PUT';
+            selectedHorizon = signal.executionPlan.selectedHorizon;
+            recoveryChainDirection = contractType;
+            recoveryChainHorizon = selectedHorizon;
+            stepBadge = `[Base]`;
+          } else {
+            // Step > 1: Martingale recovery step
+            if (sessionMode === 'locked' && recoveryChainDirection && recoveryChainHorizon) {
+              // Locked Mode: Fixed direction and fixed horizon
+              signal = baseTradeSignal;
+              contractType = recoveryChainDirection;
+              selectedHorizon = recoveryChainHorizon;
+              stepBadge = `[Locked ${contractType}]`;
+            } else if (sessionMode === 'adaptive') {
+              // Adaptive Mode: Full dynamic signal re-evaluation
+              signal = await this.requestLiveSignal(user, symbol);
+              contractType = signal.prediction.signal === 'CALL' ? 'CALL' : 'PUT';
+              selectedHorizon = signal.executionPlan.selectedHorizon;
+              stepBadge = `[Adaptive ${contractType}]`;
+            } else {
+              // Hybrid Mode (Default): Lock direction to avoid whipsaw, optimize dynamic horizon
+              signal = await this.requestLiveSignal(user, symbol);
+              contractType = recoveryChainDirection || (signal.prediction.signal === 'CALL' ? 'CALL' : 'PUT');
+              selectedHorizon = signal.executionPlan.selectedHorizon;
+              stepBadge = `[Hybrid ${contractType}]`;
+            }
+          }
           
-          const pendingLine = `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> Pending...`;
+          const pendingLine = `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> Pending... (${contractType} ${selectedHorizon.value}${selectedHorizon.unit})`;
           await this.sendOrEditScreen({
             chatId,
             messageId,
@@ -1257,14 +1307,10 @@ export class TelegramBotController {
             parseMode: 'Markdown',
             replyMarkup: {
               inline_keyboard: [
-                [{ text: `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> Pending...`, callback_data: 'noop' }]
+                [{ text: `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD ${stepBadge} -> Pending...`, callback_data: 'noop' }]
               ]
             }
           });
-
-          const signal = (step === 1 && tradeIdx === 1) ? initialSignal : await this.requestLiveSignal(user, symbol);
-          const contractType = signal.prediction.signal === 'CALL' ? 'CALL' : 'PUT';
-          const selectedHorizon = signal.executionPlan.selectedHorizon;
 
           const proposal = await client.getProposal({
             amount: currentStake,
@@ -1334,11 +1380,11 @@ export class TelegramBotController {
 
           const icon = settlement.is_won ? '🟢' : settlement.is_settled ? '🔴' : '⚠️';
           const resultStr = settlement.is_won ? `+$${profit.toFixed(2)} USD` : `-$${Math.abs(profit).toFixed(2)} USD`;
-          sessionLedger += `${icon} Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> ${resultStr}\n`;
+          sessionLedger += `${icon} Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD (${contractType}) -> ${resultStr}\n`;
 
           const stepStatusBtn = settlement.is_won
-            ? `🟢 Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> +$${profit.toFixed(2)} USD`
-            : `🔴 Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> -$${Math.abs(profit).toFixed(2)} USD`;
+            ? `🟢 Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD (${contractType}) -> +$${profit.toFixed(2)} USD`
+            : `🔴 Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD (${contractType}) -> -$${Math.abs(profit).toFixed(2)} USD`;
 
           await this.sendOrEditScreen({
             chatId,
@@ -1566,6 +1612,14 @@ export class TelegramBotController {
     else if (user.autotrade_strategy === 'profit') strategyLabel = 'Profit 📈';
     else if (user.autotrade_strategy === 'custom') strategyLabel = 'Custom Settings ⚙️';
 
+    const sessionMode = user.strategy_session_mode || 'hybrid';
+    const modeLabel =
+      sessionMode === 'hybrid'
+        ? '🔀 Hybrid (Anti-Whipsaw)'
+        : sessionMode === 'locked'
+        ? '🔒 Locked (Fixed Direction & Horizon)'
+        : '⚡ Adaptive (Full Dynamic)';
+
     await this.sendOrEditScreen({
       chatId,
       messageId,
@@ -1574,6 +1628,7 @@ export class TelegramBotController {
         `🎯 *AUTOTRADE STRATEGY PRESETS*\n` +
         `_Select a pre-configured risk-and-recovery profile or customize parameters._\n\n` +
         `⚡ *Active Profile:* \`${strategyLabel}\`\n` +
+        `🔄 *Execution Mode:* \`${modeLabel}\`\n` +
         `📊 *Scaling Factor:* \`${Number(user.scaling_factor).toFixed(2)}\`\n` +
         `🔄 *Max Steps:* \`${user.max_steps}\`\n` +
         `📈 *Max Trades:* \`${user.max_trades}\`\n\n` +
@@ -1591,7 +1646,40 @@ export class TelegramBotController {
             { text: '📈 Profit', callback_data: 'preset_strat_profit' },
             { text: '⚙️ Custom Settings', callback_data: 'set_custom_settings_menu' },
           ],
+          [{ text: `🔄 Mode: ${modeLabel}`, callback_data: 'set_session_mode_menu' }],
           [{ text: '🔙 Back to Settings', callback_data: 'menu_settings' }],
+        ],
+      },
+    });
+  }
+
+  async renderStrategySessionModeMenu(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    if (!user) return;
+
+    const currentMode = user.strategy_session_mode || 'hybrid';
+
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings',
+      text:
+        `🔄 *STRATEGY SESSION EXECUTION MODE*\n\n` +
+        `Choose how recovery steps in automated sessions adapt to market signals:\n\n` +
+        `🔀 *Hybrid Mode (Recommended)*\n` +
+        `Locks the trade direction during Martingale recovery steps (Step > 1) to eliminate whipsaws, while allowing AI dynamic expiration optimization. New base trades evaluate fresh signals.\n\n` +
+        `⚡ *Adaptive Mode*\n` +
+        `Recalculates direction and horizon dynamically on every recovery step.\n\n` +
+        `🔒 *Locked Mode*\n` +
+        `Strictly preserves initial trade direction and duration across all recovery steps.\n\n` +
+        `_Current Setting:_ \`${currentMode.toUpperCase()}\``,
+      parseMode: 'Markdown',
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: `${currentMode === 'hybrid' ? '✅ ' : ''}🔀 Hybrid (Anti-Whipsaw)`, callback_data: 'set_mode_hybrid' }],
+          [{ text: `${currentMode === 'adaptive' ? '✅ ' : ''}⚡ Adaptive (Full Dynamic)`, callback_data: 'set_mode_adaptive' }],
+          [{ text: `${currentMode === 'locked' ? '✅ ' : ''}🔒 Locked (Fixed Direct)`, callback_data: 'set_mode_locked' }],
+          [{ text: '🔙 Back to Autotrade Settings', callback_data: 'set_autotrade_settings_menu' }],
         ],
       },
     });
