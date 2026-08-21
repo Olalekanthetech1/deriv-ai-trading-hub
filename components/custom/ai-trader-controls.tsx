@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Minus, Plus, Play, Square, Sparkles, Cpu, RefreshCw, BarChart2 } from 'lucide-react';
+import { Minus, Plus, Play, Square, Sparkles, Cpu, RefreshCw, BarChart2, Zap, Lock, Shuffle, Info } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import type { ProposalInfo, DerivWS, ActiveSymbol, AuthState } from '@deriv/core';
 import type { Direction, DurationSelectUnit, DurationOption } from '@/lib/types';
@@ -658,21 +659,108 @@ export function AiTraderControls({
         </div>
       </div>
 
-      <div className="space-y-1.5 pt-1">
+      <div className="space-y-2 pt-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs font-medium text-muted-foreground">Recovery Sequence Mode</Label>
-          <span className="text-[10px] text-primary/80 font-mono">
-            {sessionExecutionMode === 'hybrid' ? 'Step Direction Lock' : sessionExecutionMode === 'adaptive' ? 'Full Dynamic' : 'Total Lock'}
+          <div className="flex items-center gap-1.5">
+            <Label className="text-xs font-semibold text-muted-foreground">Recovery Sequence Mode</Label>
+            <UITooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Recovery sequence info"
+                  className="text-muted-foreground hover:text-foreground cursor-pointer transition-colors p-0.5"
+                >
+                  <Info className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-xs text-xs p-2.5 bg-popover/95 backdrop-blur border-border/80 shadow-xl">
+                Controls how consecutive recovery/Martingale steps adapt when recovering from an initial trade loss.
+              </TooltipContent>
+            </UITooltip>
+          </div>
+          <span className="text-[10px] text-primary font-mono font-medium">
+            {sessionExecutionMode === 'hybrid'
+              ? 'Anti-Whipsaw · Recommended'
+              : sessionExecutionMode === 'adaptive'
+              ? 'Full AI Dynamic'
+              : 'Fixed Direction & Duration'}
           </span>
         </div>
-        <Select disabled={isRunning} value={sessionExecutionMode} onValueChange={(val: any) => setSessionExecutionMode(val)}>
-          <SelectTrigger className="h-10 rounded-xl bg-card border-border text-xs font-medium"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="hybrid">Hybrid (Lock Direction on Recovery, Dynamic Horizon) ⭐</SelectItem>
-            <SelectItem value="adaptive">Adaptive (Full Dynamic Signal on Every Step)</SelectItem>
-            <SelectItem value="locked">Locked (Fixed Direction & Horizon for Entire Chain)</SelectItem>
-          </SelectContent>
-        </Select>
+
+        <div className="grid grid-cols-3 gap-2">
+          {/* HYBRID BUTTON */}
+          <button
+            type="button"
+            disabled={isRunning}
+            onClick={() => setSessionExecutionMode('hybrid')}
+            className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-center transition-all duration-150 ${
+              sessionExecutionMode === 'hybrid'
+                ? 'bg-primary/15 border-primary text-primary shadow-sm ring-1 ring-primary/40 font-bold'
+                : 'bg-card border-border/80 text-muted-foreground hover:bg-muted/70 hover:text-foreground hover:border-border'
+            } ${isRunning ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
+          >
+            <div className="flex items-center gap-1 text-xs font-bold leading-tight">
+              <Shuffle className="w-3.5 h-3.5" />
+              <span>Hybrid ⭐</span>
+            </div>
+            <span className="text-[10px] font-normal opacity-80 mt-0.5">Anti-Whipsaw</span>
+          </button>
+
+          {/* ADAPTIVE BUTTON */}
+          <button
+            type="button"
+            disabled={isRunning}
+            onClick={() => setSessionExecutionMode('adaptive')}
+            className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-center transition-all duration-150 ${
+              sessionExecutionMode === 'adaptive'
+                ? 'bg-primary/15 border-primary text-primary shadow-sm ring-1 ring-primary/40 font-bold'
+                : 'bg-card border-border/80 text-muted-foreground hover:bg-muted/70 hover:text-foreground hover:border-border'
+            } ${isRunning ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
+          >
+            <div className="flex items-center gap-1 text-xs font-bold leading-tight">
+              <Zap className="w-3.5 h-3.5" />
+              <span>Adaptive</span>
+            </div>
+            <span className="text-[10px] font-normal opacity-80 mt-0.5">Full Dynamic</span>
+          </button>
+
+          {/* LOCKED BUTTON */}
+          <button
+            type="button"
+            disabled={isRunning}
+            onClick={() => setSessionExecutionMode('locked')}
+            className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-center transition-all duration-150 ${
+              sessionExecutionMode === 'locked'
+                ? 'bg-primary/15 border-primary text-primary shadow-sm ring-1 ring-primary/40 font-bold'
+                : 'bg-card border-border/80 text-muted-foreground hover:bg-muted/70 hover:text-foreground hover:border-border'
+            } ${isRunning ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`}
+          >
+            <div className="flex items-center gap-1 text-xs font-bold leading-tight">
+              <Lock className="w-3.5 h-3.5" />
+              <span>Locked</span>
+            </div>
+            <span className="text-[10px] font-normal opacity-80 mt-0.5">Fixed Direct</span>
+          </button>
+        </div>
+
+        {/* Dynamic Mode Explainer Text */}
+        <div className="text-[11px] text-muted-foreground bg-muted/30 border border-border/50 rounded-lg px-2.5 py-1.5 leading-relaxed">
+          {sessionExecutionMode === 'hybrid' && (
+            <p>
+              <strong className="text-foreground">Hybrid Mode:</strong> Locks trade direction (<span className="text-primary font-mono">CALL/PUT</span>) during recovery steps to prevent whipsaw losses, while AI dynamically optimizes expiration duration.
+            </p>
+          )}
+          {sessionExecutionMode === 'adaptive' && (
+            <p>
+              <strong className="text-foreground">Adaptive Mode:</strong> Re-evaluates both direction and duration dynamically on every recovery step based on real-time tick microstructure.
+            </p>
+          )}
+          {sessionExecutionMode === 'locked' && (
+            <p>
+              <strong className="text-foreground">Locked Mode:</strong> Strictly fixes both the initial trade direction and duration for the entire Martingale recovery sequence.
+            </p>
+          )}
+        </div>
       </div>
 
       <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px] leading-relaxed text-amber-200/80">

@@ -1,7 +1,7 @@
 import { DerivAuthenticatedClient } from './deriv-server-client';
 import { fetchDerivTickHistory } from '@/lib/ticks-helper';
 import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';
-import { getValidMarketRankingSnapshot, refreshLiveMarketRankings, type LiveMarketRankingSnapshot } from './market-ranking-cache';
+import { refreshLiveMarketRankings, type LiveMarketRankingSnapshot } from './market-ranking-cache';
 import { neon } from '@neondatabase/serverless';
 import { getDbConnectionString } from './db';
 import { getGlobalTradingCircuitBreakerConfig, getTelegramBrandingRuntimeConfig } from './ops-runtime-config';
@@ -825,15 +825,6 @@ export class TelegramBotController {
       text,
       replyMarkup: keyboard,
     });
-
-    // Background pre-warm for live market rankings cache (Option 3 optimization)
-    getValidMarketRankingSnapshot().then((snapshot) => {
-      if (!snapshot) {
-        refreshLiveMarketRankings().catch((err) =>
-          console.warn('[Pre-Warm Market Rankings Error]:', err instanceof Error ? err.message : 'unknown')
-        );
-      }
-    });
   }
 
   async renderTradeModeSelection(chatId: number, messageId: number) {
@@ -886,86 +877,68 @@ export class TelegramBotController {
       }
     };
 
-    let rankingSnapshot = await getValidMarketRankingSnapshot();
+    const step1Text = 
+      `🤖 *AI IS ANALYZING THE MARKET*\n` +
+      `_Establishing secure broker connection..._\n\n` +
+      `📡 TERMINAL: Connecting to Deriv Broker... ⏳`;
+    
+    await sendProgress(step1Text);
 
-    if (!rankingSnapshot) {
-      const step1Text = 
-        `🤖 *AI IS ANALYZING THE MARKET*\n` +
-        `_Establishing secure broker connection..._\n\n` +
-        `📡 TERMINAL: Connecting to Deriv Broker... ⏳`;
-      
-      await sendProgress(step1Text);
+    let rankingSnapshot: LiveMarketRankingSnapshot | null = null;
 
-      try {
-        rankingSnapshot = await refreshLiveMarketRankings(async (stage) => {
-          if (stage === 'data_stream') {
-            const step2Text = 
-              `🤖 *AI IS ANALYZING THE MARKET*\n` +
-              `_Ingesting live market microstructure..._\n\n` +
-              `📡 TERMINAL: Deriv Broker Connected ✅\n` +
-              `📊 Data Stream: Ingesting active tick streams... 🔄\n` +
-              `⚡ Microstructure: Extracting velocity & delta... ⏳`;
-            await sendProgress(step2Text);
-          } else if (stage === 'ai_analysis') {
-            const step3Text = 
-              `🤖 *AI IS ANALYZING THE MARKET*\n` +
-              `_Evaluating multi-horizon ML models..._\n\n` +
-              `📡 TERMINAL: Deriv Broker Connected ✅\n` +
-              `📊 Data Stream: Active tick streams verified ✅\n` +
-              `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
-              `🧠 AI Models: Evaluating production ensemble... ⚙️`;
-            await sendProgress(step3Text);
-          } else if (stage === 'target_locked') {
-            const step4Text = 
-              `🤖 *AI IS ANALYZING THE MARKET*\n` +
-              `_Calibrating win probabilities..._\n\n` +
-              `📡 TERMINAL: Deriv Broker Connected ✅\n` +
-              `📊 Data Stream: Active tick streams verified ✅\n` +
-              `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
-              `🧠 AI Models: Multi-horizon inference complete ✅\n` +
-              `🎯 Target Locked: Loading highest win-rate assets... ⏳`;
-            await sendProgress(step4Text);
-          }
-        });
-      } catch (err) {
-        console.warn('[Live Ranking Refresh Error]:', err instanceof Error ? err.message : 'unknown');
-      }
+    try {
+      rankingSnapshot = await refreshLiveMarketRankings(async (stage) => {
+        if (stage === 'data_stream') {
+          const step2Text = 
+            `🤖 *AI IS ANALYZING THE MARKET*\n` +
+            `_Ingesting live market microstructure..._\n\n` +
+            `📡 TERMINAL: Deriv Broker Connected ✅\n` +
+            `📊 Data Stream: Ingesting active tick streams... 🔄\n` +
+            `⚡ Microstructure: Extracting velocity & delta... ⏳`;
+          await sendProgress(step2Text);
+        } else if (stage === 'ai_analysis') {
+          const step3Text = 
+            `🤖 *AI IS ANALYZING THE MARKET*\n` +
+            `_Evaluating multi-horizon ML models..._\n\n` +
+            `📡 TERMINAL: Deriv Broker Connected ✅\n` +
+            `📊 Data Stream: Active tick streams verified ✅\n` +
+            `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
+            `🧠 AI Models: Evaluating production ensemble... ⚙️`;
+          await sendProgress(step3Text);
+        } else if (stage === 'target_locked') {
+          const step4Text = 
+            `🤖 *AI IS ANALYZING THE MARKET*\n` +
+            `_Calibrating win probabilities..._\n\n` +
+            `📡 TERMINAL: Deriv Broker Connected ✅\n` +
+            `📊 Data Stream: Active tick streams verified ✅\n` +
+            `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
+            `🧠 AI Models: Multi-horizon inference complete ✅\n` +
+            `🎯 Target Locked: Loading highest win-rate assets... ⏳`;
+          await sendProgress(step4Text);
+        }
+      });
+    } catch (err) {
+      console.warn('[Live Ranking Scan Error]:', err instanceof Error ? err.message : 'unknown');
+    }
 
-      if (!rankingSnapshot || rankingSnapshot.rankings.length === 0) {
-        await this.sendOrEditScreen({
-          chatId,
-          messageId: currentMessageId,
-          screenKey: 'asset_select',
-          text:
-            `⚠️ *LIVE MARKET STREAM DEGRADED*\n\n` +
-            `Unable to retrieve live AI model predictions from the signal engine. Per AGENTS.md safety rules, zero fallbacks or simulated values are permitted.\n\n` +
-            `Please tap "🔄 Retry Scan" below to re-query the production signal pipeline.`,
-          parseMode: 'Markdown',
-          replyMarkup: {
-            inline_keyboard: [
-              [{ text: '🔄 Retry Scan', callback_data: 'menu_start_trade' }],
-              [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
-            ],
-          },
-        });
-        return;
-      }
-    } else {
-      // Show fast verification sequence using cached verified model state
-      await sendProgress(
-        `🤖 *AI IS ANALYZING THE MARKET*\n` +
-        `_Ingesting live market microstructure..._\n\n` +
-        `📡 TERMINAL: Deriv Broker Connected ✅\n` +
-        `📊 Data Stream: Active tick streams verified ✅\n` +
-        `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
-        `🧠 AI Models: Multi-horizon inference complete ✅\n` +
-        `🎯 Target Locked: Loading highest win-rate assets... ⏳`
-      );
-
-      // Trigger async background refresh to keep cache fresh
-      refreshLiveMarketRankings().catch((err) =>
-        console.warn('[Background Warmup Error]:', err instanceof Error ? err.message : 'unknown')
-      );
+    if (!rankingSnapshot || rankingSnapshot.rankings.length === 0) {
+      await this.sendOrEditScreen({
+        chatId,
+        messageId: currentMessageId,
+        screenKey: 'asset_select',
+        text:
+          `⚠️ *LIVE MARKET STREAM DEGRADED*\n\n` +
+          `Unable to retrieve live AI model predictions from the signal engine. Per AGENTS.md safety rules, zero fallbacks or simulated values are permitted.\n\n` +
+          `Please tap "🔄 Retry Scan" below to re-query the production signal pipeline.`,
+        parseMode: 'Markdown',
+        replyMarkup: {
+          inline_keyboard: [
+            [{ text: '🔄 Retry Scan', callback_data: 'menu_start_trade' }],
+            [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
+          ],
+        },
+      });
+      return;
     }
 
     // Format dynamic leaderboard & choice buttons from validated ranking snapshot
@@ -1052,7 +1025,7 @@ export class TelegramBotController {
         `⏱ *Authoritative Horizon:* \`${horizon.label}\`\n` +
         `🛡 *Strategy Gate:* \`ACCEPTED\`\n` +
         `🔗 *Execution Plan:* \`${signal.executionPlan.executionPlanId}\`\n\n` +
-        `The signal above is live and must be revalidated immediately before execution.`;
+        `⚡ Authoritative Signal · Ready for instant execution with guaranteed plan lineage.`;
 
       const keyboard = {
         inline_keyboard: [
