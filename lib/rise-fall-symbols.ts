@@ -102,14 +102,13 @@ function deriveCategoryKeys(item: any, symbol: string): string[] {
 
   if (submarket === 'random_index') {
     categories.add('volatility');
-    const is1s = upperSymbol.startsWith('1HZ') || (upperSymbol.startsWith('HZ') && upperSymbol.endsWith('V')) || /^\d*HZ/i.test(upperSymbol);
-    categories.add(is1s ? 'volatility_1s' : 'volatility_standard');
+    categories.add(upperSymbol.startsWith('1HZ') ? 'volatility_1s' : 'volatility_standard');
   }
   if (submarket === 'step_index' || upperSymbol.startsWith('STP')) {
     categories.add('step');
     categories.add('synthetic');
   }
-  if (submarket === 'jump_index' || upperSymbol.startsWith('JD')) categories.add('jump');
+  if (submarket === 'jump_index') categories.add('jump');
   if (submarket === 'crash_index') categories.add('crash_boom');
   if (market === 'cryptocurrency' || market === 'crypto' || upperSymbol.startsWith('CRY')) {
     categories.add('crypto');
