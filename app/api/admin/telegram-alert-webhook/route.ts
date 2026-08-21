@@ -125,6 +125,11 @@ export async function POST(req: NextRequest) {
         await controller.handleEmergencyHalt(chatId!, messageId!, userId!);
       } else if (callbackData === 'admin_resume_trading') {
         await controller.handleResumeTrading(chatId!, messageId!, userId!);
+      } else if (callbackData === 'admin_scan_profitable') {
+        await controller.renderProfitableAssetScanner(chatId!, messageId || undefined);
+      } else if (callbackData.startsWith('admin_prof_toggle:')) {
+        const sym = callbackData.split(':')[1];
+        await controller.handleToggleProfitableSymbol(chatId!, messageId!, sym, userId!);
       } else if (callbackData.startsWith('admin_asset_tab:')) {
         const tab = callbackData.split(':')[1] as 'all' | 'volatility_1s' | 'volatility_standard' | 'jump';
         await controller.renderAssetScanner(chatId!, messageId || undefined, tab || 'all');
@@ -197,6 +202,11 @@ export async function POST(req: NextRequest) {
 
     if (text === '/logs') {
       await controller.renderLogsDashboard(chatId!);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (text === '/profitable' || text === '/top' || text === '/scan') {
+      await controller.renderProfitableAssetScanner(chatId!);
       return NextResponse.json({ ok: true });
     }
 

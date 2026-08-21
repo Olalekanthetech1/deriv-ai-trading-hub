@@ -941,11 +941,12 @@ export class TelegramBotController {
       return;
     }
 
-    // Format dynamic leaderboard & choice buttons from validated ranking snapshot
+    // Format dynamic leaderboard & choice buttons from top 6 validated rankings across Volatility 1s, Standard, and Jump assets
     let leaderboardLines = '';
     const keyboardButtons: { text: string; callback_data: string }[][] = [];
+    const topRankings = rankingSnapshot.rankings.slice(0, 6);
 
-    rankingSnapshot.rankings.forEach((res, index) => {
+    topRankings.forEach((res, index) => {
       const medal = index === 0 ? '🏆' : '✅';
       const displayName = getSymbolDisplayName(res.symbol, res.name);
       const cleanName = escapeMarkdown(displayName);

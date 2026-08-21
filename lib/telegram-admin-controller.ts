@@ -7,7 +7,7 @@ import {
   isSymbolApprovedForTelegram,
 } from './ops-runtime-config';
 import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';
-import { getValidMarketRankingSnapshot } from './market-ranking-cache';
+import { getValidMarketRankingSnapshot, refreshLiveMarketRankings } from './market-ranking-cache';
 import { getDbConnectionString, initDbSchema } from './db';
 import { neon } from '@neondatabase/serverless';
 import { generateDailyOperationsSummary } from './telegram-telemetry-alert-engine';
@@ -135,7 +135,10 @@ export class TelegramAdminController {
         { text: '🤖 Model Status', callback_data: 'admin_models' },
       ],
       [
-        { text: '🌐 Asset Scanner & Whitelist', callback_data: 'admin_asset_tab:all' },
+        { text: '🔍 Scan Top Profitable Assets', callback_data: 'admin_scan_profitable' },
+      ],
+      [
+        { text: '🌐 Asset Governance & Whitelist', callback_data: 'admin_asset_tab:all' },
       ],
       [
         { text: '📈 Daily Summary', callback_data: 'admin_summary' },
@@ -585,6 +588,123 @@ export class TelegramAdminController {
       messageId,
       activeTab,
       `✅ *SYMBOL WHITELIST UPDATED*\n${statusMsg} for Telegram traders.`
+    );
+  }
+
+  async renderProfitableAssetScanner(chatId: number, messageId?: number, bannerNotice?: string) {
+    const gov = await getTelegramAssetGovernanceConfig(true);
+    const noticeHeader = bannerNotice ? `\n\n${bannerNotice}\n` : '';
+
+    let snapshot = null;
+    try {
+      snapshot = await refreshLiveMarketRankings();
+    } catch (err) {
+      console.warn('[Telegram Admin Controller] Error scanning top profitable assets:', err);
+    }
+
+    if (!snapshot || snapshot.rankings.length === 0) {
+      const failText = `⚠️ *PROFITABLE ASSET SCANNER DEGRADED*${noticeHeader}\n\nUnable to retrieve live AI predictions for top assets right now. Please verify Deriv API connectivity.`;
+      const keyboard = [
+        [{ text: '🔄 Re-Scan Market', callback_data: 'admin_scan_profitable' }],
+        [{ text: '📊 Health Dashboard', callback_data: 'admin_health_status' }],
+      ];
+      if (messageId) {
+        await this.sendApi('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: failText,
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: keyboard },
+        });
+      } else {
+        await this.sendApi('sendMessage', {
+          chat_id: chatId,
+          text: failText,
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: keyboard },
+        });
+      }
+      return;
+    }
+
+    let reportLines = '';
+    const toggleButtons: { text: string; callback_data: string }[] = [];
+
+    snapshot.rankings.forEach((res, index) => {
+      const isApproved = isSymbolApprovedForTelegram(res.symbol, [], gov);
+      const icon = res.symbol.toUpperCase().startsWith('JD') ? '🚀' : res.symbol.toUpperCase().startsWith('1HZ') ? '⚡' : '📊';
+      const medal = index === 0 ? '🏆' : index === 1 ? '🥈' : index === 2 ? '🥉' : '🔹';
+      const statusText = isApproved ? '🟢 APPROVED' : '🔴 DISABLED';
+
+      reportLines += `${medal} ${icon} *${res.symbol}* (${res.name}): Win Rate = *${res.winRate}%* (${res.signal}) | ${statusText}\n`;
+
+      toggleButtons.push({
+        text: `${isApproved ? '🔴 Disable' : '🟢 Approve'} ${res.symbol}`,
+        callback_data: `admin_prof_toggle:${res.symbol}`,
+      });
+    });
+
+    const text =
+      `🔍 *TOP PROFITABLE ASSET AI SCANNER*${noticeHeader}\n\n` +
+      `_Scanned ${snapshot.candidateCount} assets across Volatility 1s, Standard Volatility, and Jump Indices._\n\n` +
+      `*Ranked Highest Win-Rate Assets Right Now:*\n` +
+      `${reportLines}\n` +
+      `_Tap any button below to instantly approve or disable that asset for Telegram traders._`;
+
+    const inlineKeyboard: { text: string; callback_data: string }[][] = [];
+    for (let i = 0; i < toggleButtons.length; i += 2) {
+      inlineKeyboard.push(toggleButtons.slice(i, i + 2));
+    }
+
+    inlineKeyboard.push([
+      { text: '🔄 Re-Scan Market', callback_data: 'admin_scan_profitable' },
+      { text: '🌐 Asset Whitelist & Governance', callback_data: 'admin_asset_tab:all' },
+    ]);
+    inlineKeyboard.push([
+      { text: '📊 Health Dashboard', callback_data: 'admin_health_status' },
+    ]);
+
+    if (messageId) {
+      await this.sendApi('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    } else {
+      await this.sendApi('sendMessage', {
+        chat_id: chatId,
+        text,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    }
+  }
+
+  async handleToggleProfitableSymbol(chatId: number, messageId: number, symbol: string, adminUserId: number) {
+    const upperSym = symbol.toUpperCase();
+    const currentGov = await getTelegramAssetGovernanceConfig(true);
+    let nextDisabled = [...currentGov.disabledSymbols];
+
+    if (nextDisabled.includes(upperSym)) {
+      nextDisabled = nextDisabled.filter((s) => s !== upperSym);
+    } else {
+      nextDisabled.push(upperSym);
+    }
+
+    await updateTelegramAssetGovernanceConfig({
+      disabledSymbols: nextDisabled,
+      updatedBy: `telegram_admin_${adminUserId}`,
+    });
+
+    const isNowDisabled = nextDisabled.includes(upperSym);
+    const statusMsg = isNowDisabled ? `🔴 Disabled symbol *${upperSym}*` : `🟢 Approved symbol *${upperSym}*`;
+
+    await this.renderProfitableAssetScanner(
+      chatId,
+      messageId,
+      `✅ *ASSET STATUS UPDATED*\n${statusMsg} for Telegram traders.`
     );
   }
 }

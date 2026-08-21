@@ -11,3 +11,8 @@ coverage/
 models_cache/
 *.pkl
 *.onnx
+
+# Build artifacts & temporary scripts
+*.tsbuildinfo
+patch*.js
+test*.js

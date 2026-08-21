@@ -130,16 +130,24 @@ export async function refreshLiveMarketRankings(
       throw new Error('MARKET_RANKINGS_NO_ELIGIBLE_SYMBOLS');
     }
 
-    // Stage 1: Lightweight Screening across volatility 1s, standard volatility, and jump assets
-    const stage1Candidates = eligible.map((item) => {
-      const volatilityIndexNum = parseInt(item.symbol.replace(/\D/g, ''), 10) || 50;
-      return {
-        metadata: item,
-        stage1Score: volatilityIndexNum,
-      };
-    });
+    // Stage 1: Diversity-aware candidate selection across Volatility 1s, Standard Volatility, and Jump Indices
+    const vol1sCandidates = eligible.filter((item) => item.categoryKeys.includes('volatility_1s') || item.symbol.toUpperCase().startsWith('1HZ'));
+    const volStdCandidates = eligible.filter((item) => item.categoryKeys.includes('volatility_standard') || item.symbol.toUpperCase().startsWith('R_'));
+    const jumpCandidates = eligible.filter((item) => item.categoryKeys.includes('jump') || item.symbol.toUpperCase().startsWith('JD'));
+    const otherCandidates = eligible.filter((item) => !vol1sCandidates.includes(item) && !volStdCandidates.includes(item) && !jumpCandidates.includes(item));
 
-    const topCandidates = stage1Candidates.slice(0, 8);
+    // Combine top candidates from each asset family (Vol 1s, Vol Standard, Jump)
+    const candidatePool = [
+      ...vol1sCandidates.slice(0, 5),
+      ...volStdCandidates.slice(0, 5),
+      ...jumpCandidates.slice(0, 5),
+      ...otherCandidates.slice(0, 3),
+    ];
+
+    const topCandidates = candidatePool.map((item) => ({
+      metadata: item,
+      stage1Score: parseInt(item.symbol.replace(/\D/g, ''), 10) || 50,
+    }));
 
     if (onProgress) await onProgress('ai_analysis');
 
