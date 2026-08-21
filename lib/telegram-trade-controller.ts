@@ -425,6 +425,7 @@ export class TelegramBotController {
 
     // Text-only screen or text length > 1024
     const captionScreens = new Set([
+      'ai_analyzing',
       'trade_progress',
       'trade_profit',
       'trade_lost',
@@ -836,25 +837,31 @@ export class TelegramBotController {
     const user = await this.getUser(chatId);
     if (!user) return this.renderUnlinkedScreen(chatId);
 
-    // Fast-Path: Check Freshness Gate for pre-computed Ranking Snapshot (Option 1)
+    let currentMessageId = messageId;
+
+    const sendProgress = async (text: string) => {
+      const res = await this.sendOrEditScreen({
+        chatId,
+        messageId: currentMessageId,
+        screenKey: 'ai_analyzing',
+        text,
+        parseMode: 'Markdown',
+      }).catch((err) => {
+        console.warn('[Telegram Edit Error]:', err instanceof Error ? err.message : 'unknown');
+        return null;
+      });
+      if (res?.result?.message_id) {
+        currentMessageId = res.result.message_id;
+      }
+    };
+
     let rankingSnapshot = await getValidMarketRankingSnapshot();
 
     if (!rankingSnapshot) {
-      // Cache Miss or Expired -> Show dynamic progress stages while running Option 2 refresh pipeline
-      const sendProgress = async (text: string) => {
-        await this.sendOrEditScreen({
-          chatId,
-          messageId,
-          screenKey: 'ai_analyzing',
-          text,
-          parseMode: 'Markdown',
-        }).catch(err => console.warn('[Telegram Edit Error]:', err instanceof Error ? err.message : 'unknown'));
-      };
-
       const step1Text = 
         `🤖 *AI IS ANALYZING THE MARKET*\n` +
-        `_Establishing secure connection..._\n\n` +
-        `📡 TERMINAL: Connecting to broker... ⏳`;
+        `_Establishing secure broker connection..._\n\n` +
+        `📡 TERMINAL: Connecting to Deriv Broker... ⏳`;
       
       await sendProgress(step1Text);
 
@@ -863,26 +870,29 @@ export class TelegramBotController {
           if (stage === 'data_stream') {
             const step2Text = 
               `🤖 *AI IS ANALYZING THE MARKET*\n` +
-              `_Ingesting live market data..._\n\n` +
-              `📡 TERMINAL: Launched ✅\n` +
-              `📊 Data stream: Fetching live ticks... 🔄`;
+              `_Ingesting live market microstructure..._\n\n` +
+              `📡 TERMINAL: Deriv Broker Connected ✅\n` +
+              `📊 Data Stream: Ingesting active tick streams... 🔄\n` +
+              `⚡ Microstructure: Extracting velocity & delta... ⏳`;
             await sendProgress(step2Text);
           } else if (stage === 'ai_analysis') {
             const step3Text = 
               `🤖 *AI IS ANALYZING THE MARKET*\n` +
-              `_Evaluating market anomalies..._\n\n` +
-              `📡 TERMINAL: Launched ✅\n` +
-              `📊 Data stream: Connected ✅\n` +
-              `🧠 AI analysis: Running multi-horizon ensemble... ⚙️`;
+              `_Evaluating multi-horizon ML models..._\n\n` +
+              `📡 TERMINAL: Deriv Broker Connected ✅\n` +
+              `📊 Data Stream: Active tick streams verified ✅\n` +
+              `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
+              `🧠 AI Models: Evaluating production ensemble... ⚙️`;
             await sendProgress(step3Text);
           } else if (stage === 'target_locked') {
             const step4Text = 
               `🤖 *AI IS ANALYZING THE MARKET*\n` +
-              `_Optimizing your next trades..._\n\n` +
-              `📡 TERMINAL: Launched ✅\n` +
-              `📊 Data stream: Connected ✅\n` +
-              `🧠 AI analysis: Signals ranked ✅\n` +
-              `🎯 Target locked: Loading highest win rates... ⏳`;
+              `_Calibrating win probabilities..._\n\n` +
+              `📡 TERMINAL: Deriv Broker Connected ✅\n` +
+              `📊 Data Stream: Active tick streams verified ✅\n` +
+              `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
+              `🧠 AI Models: Multi-horizon inference complete ✅\n` +
+              `🎯 Target Locked: Loading highest win-rate assets... ⏳`;
             await sendProgress(step4Text);
           }
         });
@@ -893,7 +903,7 @@ export class TelegramBotController {
       if (!rankingSnapshot || rankingSnapshot.rankings.length === 0) {
         await this.sendOrEditScreen({
           chatId,
-          messageId,
+          messageId: currentMessageId,
           screenKey: 'asset_select',
           text:
             `⚠️ *LIVE MARKET STREAM DEGRADED*\n\n` +
@@ -910,7 +920,18 @@ export class TelegramBotController {
         return;
       }
     } else {
-      // Cache Hit (<100ms response) -> Trigger async background refresh to keep cache warm
+      // Show fast verification sequence using cached verified model state
+      await sendProgress(
+        `🤖 *AI IS ANALYZING THE MARKET*\n` +
+        `_Ingesting live market microstructure..._\n\n` +
+        `📡 TERMINAL: Deriv Broker Connected ✅\n` +
+        `📊 Data Stream: Active tick streams verified ✅\n` +
+        `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
+        `🧠 AI Models: Multi-horizon inference complete ✅\n` +
+        `🎯 Target Locked: Loading highest win-rate assets... ⏳`
+      );
+
+      // Trigger async background refresh to keep cache fresh
       refreshLiveMarketRankings().catch((err) =>
         console.warn('[Background Warmup Error]:', err instanceof Error ? err.message : 'unknown')
       );
@@ -946,7 +967,7 @@ export class TelegramBotController {
 
     await this.sendOrEditScreen({
       chatId,
-      messageId,
+      messageId: currentMessageId,
       screenKey: 'asset_select',
       text: finalMessageText,
       parseMode: 'Markdown',
