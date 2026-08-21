@@ -119,16 +119,38 @@ export async function refreshLiveMarketRankings(
     
     if (onProgress) await onProgress('data_stream');
 
+    const ALLOWED_CATEGORIES = new Set(['volatility_standard', 'volatility_1s', 'jump']);
+
     const eligible = discovered.filter(
-      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && item.categoryKeys.includes('volatility')
+      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && item.categoryKeys.some((k) => ALLOWED_CATEGORIES.has(k))
     );
 
     if (eligible.length === 0) {
       throw new Error('MARKET_RANKINGS_NO_ELIGIBLE_SYMBOLS');
     }
 
-    // Stage 1: Lightweight Screening (Filtering active assets)
-    const stage1Candidates = eligible.map((item) => {
+    // Stage 1: Round-robin stratified candidate selection across allowed categories (Standard Volatility, Volatility 1s, Jump)
+    const stdVol = eligible.filter((item) => item.categoryKeys.includes('volatility_standard'));
+    const vol1s = eligible.filter((item) => item.categoryKeys.includes('volatility_1s'));
+    const jump = eligible.filter((item) => item.categoryKeys.includes('jump'));
+
+    const selected: typeof eligible = [];
+    const maxLen = Math.max(stdVol.length, vol1s.length, jump.length);
+    for (let i = 0; i < maxLen && selected.length < 6; i++) {
+      if (i < stdVol.length && selected.length < 6) selected.push(stdVol[i]);
+      if (i < vol1s.length && selected.length < 6) selected.push(vol1s[i]);
+      if (i < jump.length && selected.length < 6) selected.push(jump[i]);
+    }
+
+    if (selected.length < 5) {
+      for (const item of eligible) {
+        if (!selected.some((s) => s.symbol === item.symbol) && selected.length < 5) {
+          selected.push(item);
+        }
+      }
+    }
+
+    const stage1Candidates = selected.map((item) => {
       const volatilityIndexNum = parseInt(item.symbol.replace(/\D/g, ''), 10) || 50;
       return {
         metadata: item,
@@ -136,7 +158,7 @@ export async function refreshLiveMarketRankings(
       };
     });
 
-    const topCandidates = stage1Candidates.slice(0, 5);
+    const topCandidates = stage1Candidates;
 
     if (onProgress) await onProgress('ai_analysis');
 
