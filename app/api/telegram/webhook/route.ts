@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { neon } from '@neondatabase/serverless';
-import { TelegramBotController } from '@/lib/telegram-trade-controller';
+import { TelegramBotController, getSymbolDisplayName } from '@/lib/telegram-trade-controller';
 import { claimTelegramUpdate, ensureTelegramSchema } from '@/lib/telegram-db';
 import { getDbConnectionString } from '@/lib/db';
 import { requireTelegramWebhookSecret } from '@/lib/telegram-security';
@@ -46,18 +46,33 @@ export async function POST(req: NextRequest) {
       const user = await bot.getUser(chatId);
 
       if (user && user.support_state?.startsWith('awaiting_stake_')) {
-        const symbol = user.support_state.replace('awaiting_stake_', '');
+        const rawState = user.support_state.replace('awaiting_stake_', '');
+        const colonIdx = rawState.indexOf(':');
+        const symbol = colonIdx > -1 ? rawState.slice(0, colonIdx) : rawState;
+        const bannerMessageId = colonIdx > -1 ? Number(rawState.slice(colonIdx + 1)) : null;
+
         const amount = Number(text.replace(/[^0-9.]/g, ''));
         
+        // Delete user's text message ("200") to keep chat clean
+        await bot.safeSendApi('deleteMessage', { chat_id: chatId, message_id: msg.message_id });
+
         if (Number.isFinite(amount) && amount > 0) {
           await bot.updateUser(chatId, { support_state: 'idle', active_stake: amount });
-          const response = await bot.sendMessage(chatId, `⚙️ Initializing trade execution for ${symbol}...`);
-          const botMessageId = response?.result?.message_id;
-          if (botMessageId) {
-             await bot.executeTrade(chatId, botMessageId, symbol, amount, msg.message_id.toString());
+          if (bannerMessageId && Number.isSafeInteger(bannerMessageId)) {
+            await bot.executeTrade(chatId, bannerMessageId, symbol, amount, msg.message_id.toString());
+          } else {
+            const response = await bot.sendMessage(chatId, `⚙️ Initializing trade execution for ${getSymbolDisplayName(symbol)}...`);
+            const botMessageId = response?.result?.message_id;
+            if (botMessageId) {
+              await bot.executeTrade(chatId, botMessageId, symbol, amount, msg.message_id.toString());
+            }
           }
         } else {
-          await bot.sendMessage(chatId, `❌ Invalid amount.\n\nPlease enter a valid numerical amount for *${symbol}* (e.g. \`15.50\`), or type /start to cancel.`);
+          if (bannerMessageId && Number.isSafeInteger(bannerMessageId)) {
+            await bot.handleManualStakePrompt(chatId, bannerMessageId, symbol);
+          } else {
+            await bot.sendMessage(chatId, `❌ Invalid amount.\n\nPlease enter a valid numerical amount for *${getSymbolDisplayName(symbol)}* (e.g. \`15.50\`), or type /start to cancel.`);
+          }
         }
         return NextResponse.json({ ok: true });
       }

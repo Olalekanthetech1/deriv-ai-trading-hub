@@ -15,6 +15,76 @@ import {
 const TELEGRAM_API_BASE = 'https://api.telegram.org/bot';
 const VALID_STAKES = new Set([1, 5, 10, 25, 50]);
 
+const KNOWN_SYMBOL_DISPLAY_NAMES: Record<string, string> = {
+  '1HZ10V': 'Volatility 10 (1s) Index',
+  '1HZ25V': 'Volatility 25 (1s) Index',
+  '1HZ50V': 'Volatility 50 (1s) Index',
+  '1HZ75V': 'Volatility 75 (1s) Index',
+  '1HZ100V': 'Volatility 100 (1s) Index',
+  '1HZ150V': 'Volatility 150 (1s) Index',
+  '1HZ250V': 'Volatility 250 (1s) Index',
+  '1HZ300V': 'Volatility 300 (1s) Index',
+  'HZ10V': 'Volatility 10 (1s) Index',
+  'HZ25V': 'Volatility 25 (1s) Index',
+  'HZ50V': 'Volatility 50 (1s) Index',
+  'HZ75V': 'Volatility 75 (1s) Index',
+  'HZ100V': 'Volatility 100 (1s) Index',
+  'R_10': 'Volatility 10 Index',
+  'R_25': 'Volatility 25 Index',
+  'R_50': 'Volatility 50 Index',
+  'R_75': 'Volatility 75 Index',
+  'R_100': 'Volatility 100 Index',
+  'R_150': 'Volatility 150 Index',
+  'R_250': 'Volatility 250 Index',
+  'R_300': 'Volatility 300 Index',
+  'STPRNG': 'Step Index',
+  'JD10': 'Jump 10 Index',
+  'JD25': 'Jump 25 Index',
+  'JD50': 'Jump 50 Index',
+  'JD75': 'Jump 75 Index',
+  'JD100': 'Jump 100 Index',
+  'frxEURUSD': 'EUR/USD',
+  'frxGBPUSD': 'GBP/USD',
+  'frxUSDJPY': 'USD/JPY',
+  'frxAUDUSD': 'AUD/USD',
+  'frxUSDCAD': 'USD/CAD',
+  'frxUSDCHF': 'USD/CHF',
+  'frxNZDUSD': 'NZD/USD',
+  'frxXAUUSD': 'Gold/USD',
+};
+
+export function getSymbolDisplayName(symbol: string, fallbackName?: string): string {
+  if (!symbol) return '';
+  if (fallbackName && fallbackName !== symbol) {
+    const cleaned = fallbackName.replace(/_/g, ' ');
+    if (cleaned !== symbol && !/^[A-Z0-9_]+$/.test(cleaned)) {
+      return cleaned;
+    }
+  }
+  const upper = symbol.toUpperCase();
+  const exact = KNOWN_SYMBOL_DISPLAY_NAMES[symbol] || KNOWN_SYMBOL_DISPLAY_NAMES[upper];
+  if (exact) return exact;
+
+  if (upper.startsWith('1HZ') && upper.endsWith('V')) {
+    const num = upper.slice(3, -1);
+    return `Volatility ${num} (1s) Index`;
+  }
+  if (upper.startsWith('R_')) {
+    const num = upper.slice(2);
+    return `Volatility ${num} Index`;
+  }
+  if (upper.startsWith('HZ') && upper.endsWith('V')) {
+    const num = upper.slice(2, -1);
+    return `Volatility ${num} (1s) Index`;
+  }
+  if (upper.startsWith('JD')) {
+    const num = upper.slice(2);
+    return `Jump ${num} Index`;
+  }
+
+  return symbol.replace(/_/g, ' ');
+}
+
 function escapeMarkdown(text: string): string {
   return text.replace(/([_*\[`])/g, '\\$1');
 }
@@ -215,7 +285,7 @@ export class TelegramBotController {
     throw lastError instanceof Error ? lastError : new Error(`Telegram ${method} failed`);
   }
 
-  private async safeSendApi(method: string, payload: Record<string, any>) {
+  public async safeSendApi(method: string, payload: Record<string, any>) {
     try {
       return await this.sendApi(method, payload);
     } catch (err) {
@@ -354,7 +424,20 @@ export class TelegramBotController {
     }
 
     // Text-only screen or text length > 1024
-    if ((screenKey === 'trade_progress' || screenKey === 'trade_profit' || screenKey === 'trade_lost') && text.length <= 1024) {
+    const captionScreens = new Set([
+      'trade_progress',
+      'trade_profit',
+      'trade_lost',
+      'manual_stake',
+      'trade_error',
+      'trade_execution_error',
+      'insufficient_balance',
+      'signal_bullish',
+      'signal_bearish',
+      'signal_error',
+    ]);
+
+    if (captionScreens.has(screenKey) && text.length <= 1024) {
       const captionRes = await this.safeSendApi('editMessageCaption', {
         chat_id: chatId,
         message_id: messageId,
@@ -728,10 +811,10 @@ export class TelegramBotController {
     const text = 
       `⚙️ *SELECT TRADING MODE*\n\n` +
       `How would you like to execute this trade?\n\n` +
-      `🎯 *Manual Single Trade*\n` +
-      `Executes exactly one trade with your selected stake. No recovery steps.\n\n` +
       `🤖 *Automated Strategy Session*\n` +
-      `Uses your preset configuration (Max Steps: \`${user.max_steps || 1}\`, Scaling: \`${Number(user.scaling_factor || 1.0).toFixed(2)}x\`). Automatically recovers losses via Martingale.\n`;
+      `Uses your preset configuration (Max Steps: \`${user.max_steps || 1}\`, Scaling: \`${Number(user.scaling_factor || 1.0).toFixed(2)}x\`). Automatically recovers losses via Martingale.\n\n` +
+      `🎯 *Manual Single Trade*\n` +
+      `Executes exactly one trade with your selected stake. No recovery steps.\n`;
 
     await this.sendOrEditScreen({
       chatId,
@@ -741,9 +824,9 @@ export class TelegramBotController {
       parseMode: 'Markdown',
       replyMarkup: {
         inline_keyboard: [
-          [{ text: '🎯 Manual Single Trade', callback_data: 'mode_single_trade' }],
           [{ text: '🤖 Automated Strategy Session', callback_data: 'mode_auto_strategy' }],
-          [{ text: '🔙 Main Menu', callback_data: 'nav_main_menu' }],
+          [{ text: '🎯 Manual Single Trade', callback_data: 'mode_single_trade' }],
+          [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
         ],
       },
     });
@@ -839,7 +922,7 @@ export class TelegramBotController {
 
     rankingSnapshot.rankings.forEach((res, index) => {
       const medal = index === 0 ? '🏆' : '✅';
-      const cleanName = res.name ? res.name.replace(/_/g, ' ') : res.symbol;
+      const cleanName = getSymbolDisplayName(res.symbol, res.name);
       leaderboardLines += `${medal} *${cleanName}*: Win rate = *${res.winRate}%*\n`;
       const btnIcon = index === 0 ? '🏆' : '📈';
       keyboardButtons.push([
@@ -874,9 +957,10 @@ export class TelegramBotController {
   }
 
   async handleManualStakePrompt(chatId: number, messageId: number, symbol: string) {
-    await this.updateUser(chatId, { support_state: `awaiting_stake_${symbol}` });
+    await this.updateUser(chatId, { support_state: `awaiting_stake_${symbol}:${messageId}` });
+    const displayName = getSymbolDisplayName(symbol);
     const text = `🔢 *MANUAL STAKE AMOUNT*\n\n` +
-      `Please enter your custom stake amount in USD for *${symbol}* (e.g. \`15.50\`):\n\n` +
+      `Please enter your custom stake amount in USD for *${displayName}* (e.g. \`15.50\`):\n\n` +
       `_Reply directly to this message with a number._`;
 
     await this.sendOrEditScreen({
@@ -896,7 +980,7 @@ export class TelegramBotController {
   async renderSignalCard(chatId: number, messageId: number, symbol: string) {
     const user = await this.getUser(chatId);
     if (!user) return;
-    await this.updateUser(chatId, { active_symbol: symbol });
+    await this.updateUser(chatId, { active_symbol: symbol, support_state: 'idle' });
 
     try {
       const signal = await this.requestLiveSignal(user, symbol);
@@ -904,9 +988,10 @@ export class TelegramBotController {
       const probability = signal.prediction.confidence.toFixed(1);
       const horizon = signal.executionPlan.selectedHorizon;
 
+      const displayName = getSymbolDisplayName(symbol);
       const text =
         `${signal.prediction.signal === 'CALL' ? '🟢' : '🔴'} *LIVE PRODUCTION AI SIGNAL*\n\n` +
-        `🎯 *Asset:* \`${symbol}\`\n` +
+        `🎯 *Asset:* \`${displayName}\`\n` +
         `🧭 *Direction:* *${directionText}*\n` +
         `🤖 *Model:* \`${signal.prediction.modelVersion}\`\n` +
         `📈 *Confidence:* *${probability}%*\n` +
@@ -1054,10 +1139,10 @@ export class TelegramBotController {
     const strategyName = user.autotrade_strategy
       ? user.autotrade_strategy.charAt(0).toUpperCase() + user.autotrade_strategy.slice(1)
       : 'Balanced';
-    const cleanSymbolName = symbol.replace(/_/g, ' ');
+    const displayName = getSymbolDisplayName(symbol);
 
     const sessionHeader =
-      `🔹 *Selected asset:* \`${cleanSymbolName}\`\n` +
+      `🔹 *Selected asset:* \`${displayName}\`\n` +
       `🎯 *Direction:* *${dirLabel}*\n` +
       `💵 *Amount:* \`${normalizedStake.toFixed(2)} USD\`\n` +
       `⏱ *Timeframe:* \`${initialSignal.executionPlan.selectedHorizon.label}\`\n` +
