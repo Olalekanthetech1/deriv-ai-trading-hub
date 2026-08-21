@@ -475,6 +475,106 @@ export async function updateGlobalTradingCircuitBreakerConfig(params: {
   return cachedCircuitBreakerConfig;
 }
 
+export type TelegramBrandingConfig = Record<string, string>;
+
+let cachedTelegramBrandingConfig: TelegramBrandingConfig | null = null;
+let telegramBrandingCacheExpiresAt = 0;
+
+/**
+ * Retrieves the live, dynamic Telegram branding image URLs (keyed by screen_key) from the database.
+ */
+export async function getTelegramBrandingRuntimeConfig(forceRefresh = false): Promise<TelegramBrandingConfig> {
+  const now = Date.now();
+  if (!forceRefresh && cachedTelegramBrandingConfig && now < telegramBrandingCacheExpiresAt) {
+    return cachedTelegramBrandingConfig;
+  }
+
+  try {
+    await ensureOpsRuntimeConfigTable();
+    const sql = getDbOrThrow();
+    const rows = await sql`
+      SELECT config_value, updated_at, updated_by
+      FROM ops_runtime_config
+      WHERE config_key = 'telegram_branding_config'
+      LIMIT 1
+    `;
+
+    if (rows.length > 0 && rows[0]?.config_value && typeof rows[0].config_value === 'object') {
+      const val = rows[0].config_value;
+      const loaded: TelegramBrandingConfig = {};
+      for (const [key, url] of Object.entries(val)) {
+        if (typeof url === 'string' && url.trim().length > 0) {
+          loaded[key] = url.trim();
+        }
+      }
+      cachedTelegramBrandingConfig = loaded;
+      telegramBrandingCacheExpiresAt = now + CACHE_TTL_MS;
+      return loaded;
+    }
+  } catch (error) {
+    console.error('[ops-runtime-config] error reading telegram branding config from database:', error);
+  }
+
+  const fallback: TelegramBrandingConfig = {};
+  cachedTelegramBrandingConfig = fallback;
+  telegramBrandingCacheExpiresAt = now + CACHE_TTL_MS;
+  return fallback;
+}
+
+/**
+ * Updates dynamic Telegram branding image URLs in the database.
+ */
+export async function updateTelegramBrandingRuntimeConfig(
+  updates: Record<string, string>,
+  updatedBy: string = 'admin'
+): Promise<TelegramBrandingConfig> {
+  await ensureOpsRuntimeConfigTable();
+  const current = await getTelegramBrandingRuntimeConfig(true);
+
+  const nextConfig = { ...current };
+  for (const [key, url] of Object.entries(updates)) {
+    if (typeof url === 'string' && url.trim().length > 0) {
+      nextConfig[key] = url.trim();
+    } else {
+      delete nextConfig[key];
+    }
+  }
+
+  const sql = getDbOrThrow();
+  const rows = await sql`
+    INSERT INTO ops_runtime_config (config_key, config_value, updated_at, updated_by)
+    VALUES ('telegram_branding_config', ${JSON.stringify(nextConfig)}::jsonb, NOW(), ${updatedBy})
+    ON CONFLICT (config_key) DO UPDATE SET
+      config_value = EXCLUDED.config_value,
+      updated_at = NOW(),
+      updated_by = EXCLUDED.updated_by
+    RETURNING config_value, updated_at, updated_by
+  `;
+
+  try {
+    await sql`
+      INSERT INTO ops_audit_events (
+        category, severity, actor, action, resource_type, resource_id, metadata
+      ) VALUES (
+        'telegram_ops',
+        'info',
+        ${updatedBy},
+        'update_telegram_branding_config',
+        'ops_runtime_config',
+        'telegram_branding_config',
+        ${JSON.stringify({ previous: current, current: nextConfig })}::jsonb
+      )
+    `;
+  } catch (auditErr) {
+    console.warn('[ops-runtime-config] audit log entry warning for branding config:', auditErr);
+  }
+
+  cachedTelegramBrandingConfig = nextConfig;
+  telegramBrandingCacheExpiresAt = Date.now() + CACHE_TTL_MS;
+
+  return nextConfig;
+}
+
 /**
  * Resumes global automated trading ONLY AFTER verifying system health gates:
  * 1. Database schema & connectivity check

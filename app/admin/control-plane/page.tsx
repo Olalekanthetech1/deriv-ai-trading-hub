@@ -41,6 +41,7 @@ const groups = [
       ['final-verification', 'Production Verification', 'Evidence-based production readiness checks.'],
       ['security', 'Security', 'Security posture and administrative controls.'],
       ['database', 'Database Operations', 'Database diagnostics and operational maintenance.'],
+      ['telegram-branding', 'Telegram Bot Branding', 'Manage dynamic banner image URLs for Telegram bot screens.'],
     ],
   },
 ];

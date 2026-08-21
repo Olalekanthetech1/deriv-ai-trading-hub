@@ -4,7 +4,7 @@ import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall
 import { getValidMarketRankingSnapshot, refreshLiveMarketRankings, type LiveMarketRankingSnapshot } from './market-ranking-cache';
 import { neon } from '@neondatabase/serverless';
 import { getDbConnectionString } from './db';
-import { getGlobalTradingCircuitBreakerConfig } from './ops-runtime-config';
+import { getGlobalTradingCircuitBreakerConfig, getTelegramBrandingRuntimeConfig } from './ops-runtime-config';
 import {
   claimTelegramTradeIntent,
   decryptSecret,
@@ -188,6 +188,172 @@ export class TelegramBotController {
     }
   }
 
+  /**
+   * Unified Telegram screen renderer that enforces dynamic branding images, caption limits,
+   * state transitions (editMessageMedia / editMessageText / editMessageCaption), and graceful
+   * fail-safe fallbacks.
+   */
+  public async sendOrEditScreen(options: {
+    chatId: number;
+    messageId?: number;
+    screenKey: string;
+    text: string;
+    parseMode?: 'Markdown' | 'HTML';
+    replyMarkup?: any;
+  }) {
+    const { chatId, messageId, screenKey, text, parseMode = 'Markdown', replyMarkup } = options;
+
+    let imageUrl: string | null = null;
+    try {
+      const branding = await getTelegramBrandingRuntimeConfig();
+      if (branding) {
+        const keyUpper = screenKey.toUpperCase();
+        const candidateKeys = [
+          screenKey,
+          keyUpper,
+          `TELEGRAM_${keyUpper}`,
+          `TELEGRAM_${keyUpper}_IMAGE_URL`,
+        ];
+
+        // Specific alias fallbacks
+        if (screenKey === 'main_menu') candidateKeys.push('TELEGRAM_MAIN_MENU_IMAGE_URL');
+        else if (screenKey === 'signal_bullish') candidateKeys.push('TELEGRAM_BULLISH_IMAGE_URL', 'signal_card');
+        else if (screenKey === 'signal_bearish') candidateKeys.push('TELEGRAM_BEARISH_IMAGE_URL', 'signal_card');
+        else if (screenKey === 'trade_profit') candidateKeys.push('TELEGRAM_PROFIT_IMAGE_URL');
+        else if (screenKey === 'trade_lost') candidateKeys.push('TELEGRAM_LOST_IMAGE_URL');
+        else if (screenKey === 'settings_screen') candidateKeys.push('TELEGRAM_SETTINGS_IMAGE_URL');
+        else if (screenKey === 'account_screen') candidateKeys.push('TELEGRAM_MY_ACCOUNT_IMAGE_URL');
+        else if (screenKey === 'insufficient_balance') candidateKeys.push('TELEGRAM_INSUFFICIENT_BALANCE_IMAGE_URL');
+        else if (screenKey === 'unlinked_screen' || screenKey === 'session_expired') candidateKeys.push('TELEGRAM_SESSION_EXPIRED_IMAGE_URL', 'unlinked_screen', 'session_expired');
+        else if (screenKey === 'trade_execution_error') candidateKeys.push('TELEGRAM_TRADE_EXECUTION_ERROR_IMAGE_URL');
+        else if (screenKey === 'faq_screen') candidateKeys.push('TELEGRAM_FAQ_IMAGE_URL');
+        else if (screenKey === 'asset_select') candidateKeys.push('TELEGRAM_ASSET_SELECT_IMAGE_URL');
+        else if (screenKey === 'trade_mode_select') candidateKeys.push('TELEGRAM_TRADE_MODE_SELECT_IMAGE_URL');
+        else if (screenKey === 'ai_analyzing') candidateKeys.push('TELEGRAM_AI_ANALYZING_IMAGE_URL');
+
+        for (const k of candidateKeys) {
+          if (typeof branding[k] === 'string' && branding[k].trim().length > 0) {
+            imageUrl = branding[k].trim();
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[TelegramBranding Resolution Error on screen ${screenKey}]:`, err instanceof Error ? err.message : 'unknown');
+    }
+
+    // Telegram photo caption length limit is strictly 1,024 characters.
+    const canSendAsPhoto = Boolean(imageUrl && text.length <= 1024);
+
+    if (!messageId) {
+      // Fresh message (e.g., /start command or unlinked screen)
+      if (canSendAsPhoto && imageUrl) {
+        const photoRes = await this.safeSendApi('sendPhoto', {
+          chat_id: chatId,
+          photo: imageUrl,
+          caption: text,
+          parse_mode: parseMode,
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        });
+        if (photoRes) return photoRes;
+      }
+      // Fallback or text-only fresh message
+      return await this.safeSendApi('sendMessage', {
+        chat_id: chatId,
+        text,
+        parse_mode: parseMode,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      });
+    }
+
+    // Editing an existing message (e.g. callback query)
+    if (canSendAsPhoto && imageUrl) {
+      try {
+        return await this.sendApi('editMessageMedia', {
+          chat_id: chatId,
+          message_id: messageId,
+          media: {
+            type: 'photo',
+            media: imageUrl,
+            caption: text,
+            parse_mode: parseMode,
+          },
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        });
+      } catch (err: any) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[sendOrEditScreen editMessageMedia fallback on screen ${screenKey}]:`, errMsg);
+
+        // Controlled fallback: Previous message was text-only or media mismatch occurred.
+        // Delete previous message and send fresh photo message with reply markup.
+        const deleted = await this.safeSendApi('deleteMessage', { chat_id: chatId, message_id: messageId });
+        const photoSent = await this.safeSendApi('sendPhoto', {
+          chat_id: chatId,
+          photo: imageUrl,
+          caption: text,
+          parse_mode: parseMode,
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        });
+
+        if (photoSent) return photoSent;
+
+        // If photo send failed (e.g. URL unreachable), fall back to text message
+        if (!deleted) {
+          return await this.safeSendApi('editMessageText', {
+            chat_id: chatId,
+            message_id: messageId,
+            text,
+            parse_mode: parseMode,
+            ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+          });
+        } else {
+          return await this.safeSendApi('sendMessage', {
+            chat_id: chatId,
+            text,
+            parse_mode: parseMode,
+            ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+          });
+        }
+      }
+    }
+
+    // Text-only screen or text length > 1024
+    try {
+      return await this.sendApi('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: parseMode,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      });
+    } catch (err: any) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[sendOrEditScreen editMessageText fallback on screen ${screenKey}]:`, errMsg);
+
+      // If previous message was a photo message, editMessageText throws error ("message to edit has no text").
+      // Try editMessageCaption to update caption & keyboard under existing photo without breaking navigation!
+      if (text.length <= 1024) {
+        const captionRes = await this.safeSendApi('editMessageCaption', {
+          chat_id: chatId,
+          message_id: messageId,
+          caption: text,
+          parse_mode: parseMode,
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        });
+        if (captionRes) return captionRes;
+      }
+
+      // Controlled fallback if editMessageCaption fails or text > 1024: delete media message & send fresh text message
+      await this.safeSendApi('deleteMessage', { chat_id: chatId, message_id: messageId });
+      return await this.safeSendApi('sendMessage', {
+        chat_id: chatId,
+        text,
+        parse_mode: parseMode,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      });
+    }
+  }
+
   private async getSql() {
     const dbUrl = getDbConnectionString();
     if (!dbUrl) return null;
@@ -335,20 +501,69 @@ export class TelegramBotController {
     return signal;
   }
 
-  async renderUnlinkedScreen(chatId: number, firstName?: string) {
+  async renderUnlinkedScreen(chatId: number, firstName?: string, messageId?: number) {
     const webUrl = process.env.APP_URL || 'https://deriv-trading.app';
     const escapedName = escapeMarkdown(firstName || 'Trader');
-    await this.safeSendApi('sendMessage', {
-      chat_id: chatId,
-      text:
-        `👋 *Welcome ${escapedName} to Deriv AI Terminal*\n\n` +
-        `Your intelligent microstructure trading terminal powered by the production signal pipeline.\n\n` +
-        `⚠️ *No Account Connected*\nConnect your Deriv account from the Web App to begin.`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+    const text =
+      `👋 *Welcome ${escapedName} to Deriv AI Terminal*\n\n` +
+      `Your intelligent microstructure trading terminal powered by the production signal pipeline.\n\n` +
+      `⚠️ *No Account Connected*\nConnect your Deriv account from the Web App to begin.`;
+
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'unlinked_screen',
+      text,
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '📱 Connect via Web App', url: webUrl }],
           [{ text: '❓ How It Works & FAQ', callback_data: 'nav_faq' }],
+        ],
+      },
+    });
+  }
+
+  async renderInsufficientBalanceScreen(
+    chatId: number,
+    messageId?: number,
+    details?: {
+      availableBalance?: number;
+      requiredStake?: number;
+      recoveryStep?: number;
+      currency?: string;
+    }
+  ) {
+    const currency = details?.currency || 'USD';
+    const availStr = details?.availableBalance !== undefined
+      ? `${details.availableBalance.toFixed(2)} ${currency}`
+      : 'Unavailable';
+    const reqStr = details?.requiredStake !== undefined
+      ? `${details.requiredStake.toFixed(2)} ${currency}`
+      : 'Unavailable';
+    const stepStr = details?.recoveryStep !== undefined
+      ? `Step ${details.recoveryStep}`
+      : 'Step 1';
+
+    const text =
+      `⚠️ *INSUFFICIENT BALANCE*\n\n` +
+      `Your available balance is not enough to place the next required stake for the current recovery step.\n\n` +
+      `💵 *Available Balance:* \`${availStr}\`\n` +
+      `🎯 *Required Stake:* \`${reqStr}\`\n` +
+      `📊 *Recovery Step:* \`${stepStr}\`\n\n` +
+      `_Your configured Martingale sequence remains preserved. Select an option below:_`;
+
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'insufficient_balance',
+      text,
+      parseMode: 'Markdown',
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: '💳 Deposit Funds', callback_data: 'menu_deposit' }],
+          [{ text: '⚙️ Reset / Lower Stake', callback_data: 'set_stake_menu' }],
+          [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
         ],
       },
     });
@@ -367,18 +582,19 @@ export class TelegramBotController {
       ],
     };
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'cashier_screen',
       text,
-      parse_mode: 'Markdown',
-      reply_markup: keyboard,
+      parseMode: 'Markdown',
+      replyMarkup: keyboard,
     });
   }
 
   async renderMainTerminal(chatId: number, messageId?: number) {
     const user = await this.getUser(chatId);
-    if (!user) return this.renderUnlinkedScreen(chatId);
+    if (!user) return this.renderUnlinkedScreen(chatId, undefined, messageId);
 
     const token = decryptSecret(user.token_encrypted);
     let realBalanceStr = '0.00 USD';
@@ -424,11 +640,12 @@ export class TelegramBotController {
       ],
     };
 
-    await this.safeSendApi(messageId ? 'editMessageText' : 'sendMessage', {
-      chat_id: chatId,
-      ...(messageId ? { message_id: messageId } : {}),
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'main_menu',
       text,
-      reply_markup: keyboard,
+      replyMarkup: keyboard,
     });
 
     // Background pre-warm for live market rankings cache (Option 3 optimization)
@@ -443,7 +660,7 @@ export class TelegramBotController {
 
   async renderTradeModeSelection(chatId: number, messageId: number) {
     const user = await this.getUser(chatId);
-    if (!user) return this.renderUnlinkedScreen(chatId);
+    if (!user) return this.renderUnlinkedScreen(chatId, undefined, messageId);
 
     const text = 
       `⚙️ *SELECT TRADING MODE*\n\n` +
@@ -453,12 +670,13 @@ export class TelegramBotController {
       `🤖 *Automated Strategy Session*\n` +
       `Uses your preset configuration (Max Steps: \`${user.max_steps || 1}\`, Scaling: \`${Number(user.scaling_factor || 1.0).toFixed(2)}x\`). Automatically recovers losses via Martingale.\n`;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'trade_mode_select',
       text,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '🎯 Manual Single Trade', callback_data: 'mode_single_trade' }],
           [{ text: '🤖 Automated Strategy Session', callback_data: 'mode_auto_strategy' }],
@@ -478,11 +696,12 @@ export class TelegramBotController {
     if (!rankingSnapshot) {
       // Cache Miss or Expired -> Show dynamic progress stages while running Option 2 refresh pipeline
       const sendProgress = async (text: string) => {
-        await this.safeSendApi('editMessageText', {
-          chat_id: chatId,
-          message_id: messageId,
-          text: text,
-          parse_mode: 'Markdown',
+        await this.sendOrEditScreen({
+          chatId,
+          messageId,
+          screenKey: 'ai_analyzing',
+          text,
+          parseMode: 'Markdown',
         }).catch(err => console.warn('[Telegram Edit Error]:', err instanceof Error ? err.message : 'unknown'));
       };
 
@@ -577,12 +796,13 @@ export class TelegramBotController {
       `${leaderboardLines}\n` +
       `📌 *Make your choice below*`;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'asset_select',
       text: finalMessageText,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: keyboardButtons,
       },
     });
@@ -642,12 +862,15 @@ export class TelegramBotController {
         ],
       };
 
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
+      const signalScreenKey = signal.prediction.signal === 'CALL' ? 'signal_bullish' : 'signal_bearish';
+
+      await this.sendOrEditScreen({
+        chatId,
+        messageId,
+        screenKey: signalScreenKey,
         text,
-        parse_mode: 'Markdown',
-        reply_markup: keyboard,
+        parseMode: 'Markdown',
+        replyMarkup: keyboard,
       });
     } catch (err) {
       const code = err instanceof Error ? err.message : 'AI_SIGNAL_UNAVAILABLE';
@@ -734,6 +957,8 @@ export class TelegramBotController {
     let totalNetProfit = 0;
     let finalBalance: any = null;
     let anyTradeExecuted = false;
+    let activeStep = 1;
+    let activeStake = normalizedStake;
 
     await this.safeSendApi('editMessageText', {
       chat_id: chatId,
@@ -750,6 +975,24 @@ export class TelegramBotController {
         let currentStake = normalizedStake;
 
         for (let step = 1; step <= maxSteps; step++) {
+          activeStep = step;
+          activeStake = currentStake;
+
+          // Check account balance before placing next required stake
+          const liveBalanceObj = await client.getBalance().catch(() => null);
+          const availBalance = liveBalanceObj ? Number(liveBalanceObj.balance) : null;
+
+          if (availBalance !== null && availBalance < currentStake) {
+            await updateTelegramTradeIntent(sql, idempotencyKey, 'failed');
+            await this.renderInsufficientBalanceScreen(chatId, messageId, {
+              availableBalance: availBalance,
+              requiredStake: currentStake,
+              recoveryStep: step,
+              currency: user.currency || liveBalanceObj?.currency || 'USD',
+            });
+            return;
+          }
+
           anyTradeExecuted = true;
           
           const pendingLine = `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> Pending...`;
@@ -857,12 +1100,15 @@ export class TelegramBotController {
           `Balance: ${Number(finalBalance.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${finalBalance.currency}\n\n` +
           `Choose your next step...`;
 
-        await this.safeSendApi('editMessageText', {
-          chat_id: chatId,
-          message_id: messageId,
+        const sessionOutcomeKey = totalNetProfit > 0 ? 'trade_profit' : totalNetProfit < 0 ? 'trade_lost' : 'main_menu';
+
+        await this.sendOrEditScreen({
+          chatId,
+          messageId,
+          screenKey: sessionOutcomeKey,
           text: finalMessage,
-          parse_mode: 'Markdown',
-          reply_markup: {
+          parseMode: 'Markdown',
+          replyMarkup: {
             inline_keyboard: [
               [{ text: '🚀 New Trade', callback_data: 'menu_start_trade' }],
               [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
@@ -875,16 +1121,48 @@ export class TelegramBotController {
       await updateTelegramTradeIntent(sql, idempotencyKey, 'failed');
       const rawError = err instanceof Error ? err.message : 'unknown';
       console.error('[Trade Execution Failed]:', rawError);
+
+      const isInsufficientBalance =
+        rawError.includes('InsufficientBalance') ||
+        rawError.toLowerCase().includes('insufficient balance') ||
+        rawError.includes('INSUFFICIENT_BALANCE');
+
+      if (isInsufficientBalance) {
+        const latestBal = await client.getBalance().catch(() => null);
+        await this.renderInsufficientBalanceScreen(chatId, messageId, {
+          availableBalance: latestBal ? Number(latestBal.balance) : undefined,
+          requiredStake: activeStake,
+          recoveryStep: activeStep,
+          currency: user.currency,
+        });
+        return;
+      }
+
+      const isSessionOrAuthError =
+        rawError.includes('InvalidToken') ||
+        rawError.includes('AuthorizationRequired') ||
+        rawError.includes('SessionExpired') ||
+        rawError.includes('UnlinkedAccount');
+
+      if (isSessionOrAuthError) {
+        await this.renderUnlinkedScreen(chatId, undefined, messageId);
+        return;
+      }
+
       const userMessage = formatBrokerExecutionError(err);
-      
       const partialLedger = sessionLedger ? `${sessionLedger}\n` : '';
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
-        text: `${partialLedger}❌ *Trade blocked*\n\n\`${userMessage}\``,
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]],
+
+      await this.sendOrEditScreen({
+        chatId,
+        messageId,
+        screenKey: 'trade_execution_error',
+        text: `${partialLedger}⚠️ *TRADE EXECUTION ERROR*\n\n\`${userMessage}\``,
+        parseMode: 'Markdown',
+        replyMarkup: {
+          inline_keyboard: [
+            [{ text: '🔄 Retry Trade', callback_data: 'menu_start_trade' }],
+            [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
+          ],
         },
       });
     } finally {
@@ -914,9 +1192,10 @@ export class TelegramBotController {
       }
     }
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'account_screen',
       text:
         `👤 *MY ACCOUNT*\n\n` +
         `🎮 *Trading Mode:* \`${user.account_type.toUpperCase()}\`\n` +
@@ -924,8 +1203,8 @@ export class TelegramBotController {
         `📬 *Email:* \`${emailStr}\`\n` +
         `💵 *Active Balance:* *${balanceStr}*\n` +
         `⚙️ *Risk Scaling:* \`${user.scaling_factor}x (Max ${user.max_steps} Steps)\``,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '💰 Deposit', callback_data: 'menu_deposit' }],
           [
@@ -943,15 +1222,16 @@ export class TelegramBotController {
   }
 
   async renderWithdrawalScreen(chatId: number, messageId: number) {
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'cashier_screen',
       text:
         `💳 *DERIV CASHIER WITHDRAWAL*\n\n` +
         `To safely withdraw your balance and profits, access the official Deriv Cashier portal directly:\n\n` +
         `🔗 [Deriv Withdrawal Cashier Portal](https://app.deriv.com/cashier/withdrawal)`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '💳 Open Withdrawal Portal', url: 'https://app.deriv.com/cashier/withdrawal' }],
           [{ text: '⬅️ Main menu', callback_data: 'nav_main_menu' }],
@@ -970,9 +1250,10 @@ export class TelegramBotController {
     const isAuto = user.active_duration_unit === 'auto';
     const durationLabel = isAuto ? '🤖 Auto (AI Optimal)' : `${user.active_duration_value} ${user.active_duration_unit.toUpperCase()}`;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings_screen',
       text:
         `⚙️ *SETTINGS*\n` +
         `_Configure your preferences and options_\n\n` +
@@ -985,8 +1266,8 @@ export class TelegramBotController {
         `Switch between Manual and Autotrade anytime (Current: \`${modeText}\`).\n\n` +
         `🌐 *Language*\n` +
         `Select your preferred interface language (Current: \`${langLabel}\`).`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '🎯 Autotrade Settings', callback_data: 'set_autotrade_settings_menu' }],
           [{ text: '⏳ Expiration Time', callback_data: 'set_duration_menu' }],
@@ -1007,9 +1288,10 @@ export class TelegramBotController {
     else if (user.autotrade_strategy === 'profit') strategyLabel = 'Profit 📈';
     else if (user.autotrade_strategy === 'custom') strategyLabel = 'Custom Settings ⚙️';
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings_screen',
       text:
         `🎯 *AUTOTRADE STRATEGY PRESETS*\n` +
         `_Select a pre-configured risk-and-recovery profile or customize parameters._\n\n` +
@@ -1020,8 +1302,8 @@ export class TelegramBotController {
         `• *Balanced ⚖️*: \`2.20x\` scaling, \`5\` max steps, \`2\` max trades.\n` +
         `• *Conservative 🛡️*: \`2.10x\` scaling, \`5\` max steps, \`1\` max trade.\n` +
         `• *Profit 📈*: \`2.30x\` scaling, \`10\` max steps, \`3\` max trades.`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [
             { text: '⚖️ Balanced', callback_data: 'preset_strat_balanced' },
@@ -1189,53 +1471,57 @@ export class TelegramBotController {
   }
 
   async renderFaqScreen(chatId: number, messageId?: number) {
-    const payload = {
-      chat_id: chatId,
-      text:
-        `📖 *DERIV TRADING TERMINAL — FAQ*\n\n` +
-        `🧠 *1️⃣ How does this bot work?*\n` +
-        `The bot obtains live predictions from our production market microstructure pipeline, verifies the authoritative horizon alignment, and executes trade proposals when pre-trade criteria are fully met.\n\n` +
-        `🔒 *2️⃣ How are my credentials stored?*\n` +
-        `Your Deriv credentials are encrypted at rest with industry-standard cryptographic protection and are never displayed in plain text in your Telegram interface.\n\n` +
-        `🔄 *3️⃣ Can I switch between Demo and Real accounts?*\n` +
-        `Yes. Switch account modes using the \`🎮 Demo / Real\` toggle. The bot dynamically re-resolves and connects to your respective Demo or Real account with the broker.\n\n` +
-        `🤖 *4️⃣ Auto vs. Manual Expiration: What's the difference?*\n` +
-        `• \`Auto (AI Optimal)\`: The system evaluates the currently eligible, validated trading horizons and selects the horizon that best fits current market conditions and available model evidence.\n` +
-        `• \`Manual Select\`: Overrides the AI selection and strictly locks your trade execution to your chosen duration (e.g., 5 Ticks or 60 Seconds).\n\n` +
-        `💬 *5️⃣ How does the Live Support system work?*\n` +
-        `When you click **Live Support** below and type your message, your inquiry is securely routed to our administrator support channel, allowing our team to reply to your ticket directly in this chat.`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+    const text =
+      `📖 *DERIV TRADING TERMINAL — FAQ*\n\n` +
+      `🧠 *1️⃣ How does this bot work?*\n` +
+      `The bot obtains live predictions from our production market microstructure pipeline, verifies the authoritative horizon alignment, and executes trade proposals when pre-trade criteria are fully met.\n\n` +
+      `🔒 *2️⃣ How are my credentials stored?*\n` +
+      `Your Deriv credentials are encrypted at rest with industry-standard cryptographic protection and are never displayed in plain text in your Telegram interface.\n\n` +
+      `🔄 *3️⃣ Can I switch between Demo and Real accounts?*\n` +
+      `Yes. Switch account modes using the \`🎮 Demo / Real\` toggle. The bot dynamically re-resolves and connects to your respective Demo or Real account with the broker.\n\n` +
+      `🤖 *4️⃣ Auto vs. Manual Expiration: What's the difference?*\n` +
+      `• \`Auto (AI Optimal)\`: The system evaluates the currently eligible, validated trading horizons and selects the horizon that best fits current market conditions and available model evidence.\n` +
+      `• \`Manual Select\`: Overrides the AI selection and strictly locks your trade execution to your chosen duration (e.g., 5 Ticks or 60 Seconds).\n\n` +
+      `💬 *5️⃣ How does the Live Support system work?*\n` +
+      `When you click **Live Support** below and type your message, your inquiry is securely routed to our administrator support channel, allowing our team to reply to your ticket directly in this chat.`;
+
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'faq_screen',
+      text,
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '💬 Live Support', callback_data: 'nav_support_contact' }],
           [{ text: '🏠 Back to Main Menu', callback_data: 'nav_main_menu' }]
         ]
       },
-    };
-
-    await this.safeSendApi(messageId ? 'editMessageText' : 'sendMessage', messageId ? { ...payload, message_id: messageId } : payload);
+    });
   }
 
   async renderSupportContactPrompt(chatId: number, messageId?: number) {
     await this.updateUser(chatId, { support_state: 'awaiting_message' });
 
-    const payload = {
-      chat_id: chatId,
-      text:
-        `💬 *LIVE SUPPORT CHANNEL*\n\n` +
-        `Your message will be sent directly to our Administrator team for live routing and response.\n\n` +
-        `📝 *How to proceed:*\n` +
-        `Simply type your support question, details, or feedback below and press *Send*.\n\n` +
-        `⚠️ _To cancel and return, please click the button below._`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+    const text =
+      `💬 *LIVE SUPPORT CHANNEL*\n\n` +
+      `Your message will be sent directly to our Administrator team for live routing and response.\n\n` +
+      `📝 *How to proceed:*\n` +
+      `Simply type your support question, details, or feedback below and press *Send*.\n\n` +
+      `⚠️ _To cancel and return, please click the button below._`;
+
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'support_screen',
+      text,
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '❌ Cancel & Back', callback_data: 'cancel_support' }]
         ]
-      }
-    };
-
-    await this.safeSendApi(messageId ? 'editMessageText' : 'sendMessage', messageId ? { ...payload, message_id: messageId } : payload);
+      },
+    });
   }
 
   async handleCancelSupport(chatId: number, messageId?: number) {

@@ -161,7 +161,7 @@ export async function POST(req: NextRequest) {
         await bot.renderWithdrawalScreen(chatId, messageId);
       } else if (data === 'menu_account') {
         await bot.renderAccountScreen(chatId, messageId);
-      } else if (data === 'menu_settings') {
+      } else if (data === 'menu_settings' || data === 'set_stake_menu') {
         await bot.renderSettingsScreen(chatId, messageId);
       } else if (data === 'set_autotrade_settings_menu') {
         await bot.renderAutotradeSettingsMenu(chatId, messageId);

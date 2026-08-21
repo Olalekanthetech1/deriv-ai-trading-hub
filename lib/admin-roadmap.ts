@@ -73,6 +73,7 @@ export const adminRoadmap: RoadmapSection[] = [
   { id: 'security', domainId: 'production-governance', title: 'Security & Configuration', description: 'Security posture, secrets exposure, session controls and security events.', status: 'complete' },
   { id: 'database', domainId: 'production-governance', title: 'Database Operations', description: 'Database diagnostics, schema migration, data integrity and operational maintenance.', status: 'complete' },
   { id: 'infrastructure', domainId: 'production-governance', title: 'Runtime & Infrastructure', description: 'Latency, APIs, WebSockets, database, cron and runtime diagnostics.', status: 'complete' },
+  { id: 'telegram-branding', domainId: 'production-governance', title: 'Telegram Bot Branding', description: 'Configure dynamic branding banner image URLs for Telegram bot screens.', status: 'complete' },
   { id: 'worker-control', domainId: 'production-governance', title: 'Automation & Worker Control', description: 'Central operational switchboard for background workers, queue scaling, and emergency halts.', status: 'complete' },
 ];
 
