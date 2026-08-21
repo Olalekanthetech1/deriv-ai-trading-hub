@@ -588,6 +588,25 @@ export class TelegramBotController {
     });
   }
 
+  async handleManualStakePrompt(chatId: number, messageId: number, symbol: string) {
+    await this.updateUser(chatId, { support_state: `awaiting_stake_${symbol}` });
+    const text = `🔢 *MANUAL STAKE AMOUNT*\n\n` +
+      `Please enter your custom stake amount in USD for *${symbol}* (e.g. \`15.50\`):\n\n` +
+      `_Reply directly to this message with a number._`;
+
+    await this.safeSendApi('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '❌ Cancel', callback_data: `asset_${symbol}` }]
+        ]
+      }
+    });
+  }
+
   async renderSignalCard(chatId: number, messageId: number, symbol: string) {
     const user = await this.getUser(chatId);
     if (!user) return;
@@ -615,7 +634,7 @@ export class TelegramBotController {
           [
             ...[1, 5, 10, 25, 50].map((stake) => ({ text: `${stake} USD`, callback_data: `stake_${symbol}_${stake}` })),
           ],
-          [{ text: `⚡ Execute Default ($${Number(user.active_stake).toFixed(2)})`, callback_data: `exec_${symbol}_${Number(user.active_stake)}` }],
+          [{ text: `🔢 Manual amount set`, callback_data: `manual_stake_${symbol}` }],
           [
             { text: '🔙 Back to Assets', callback_data: 'menu_start_trade' },
             { text: '🏠 Main Menu', callback_data: 'nav_main_menu' },

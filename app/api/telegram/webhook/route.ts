@@ -45,6 +45,23 @@ export async function POST(req: NextRequest) {
 
       const user = await bot.getUser(chatId);
 
+      if (user && user.support_state?.startsWith('awaiting_stake_')) {
+        const symbol = user.support_state.replace('awaiting_stake_', '');
+        const amount = Number(text.replace(/[^0-9.]/g, ''));
+        
+        if (Number.isFinite(amount) && amount > 0) {
+          await bot.updateUser(chatId, { support_state: 'idle', active_stake: amount });
+          const response = await bot.sendMessage(chatId, `⚙️ Initializing trade execution for ${symbol}...`);
+          const botMessageId = response?.result?.message_id;
+          if (botMessageId) {
+             await bot.executeTrade(chatId, botMessageId, symbol, amount, msg.message_id.toString());
+          }
+        } else {
+          await bot.sendMessage(chatId, `❌ Invalid amount.\n\nPlease enter a valid numerical amount for *${symbol}* (e.g. \`15.50\`), or type /start to cancel.`);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
       if (user && user.support_state === 'awaiting_message') {
         const { TelegramAdminController } = await import('@/lib/telegram-admin-controller');
         const adminController = new TelegramAdminController();
@@ -126,6 +143,8 @@ export async function POST(req: NextRequest) {
         await bot.renderAssetSelection(chatId, messageId);
       } else if (data.startsWith('asset_')) {
         await bot.renderSignalCard(chatId, messageId, data.replace('asset_', ''));
+      } else if (data.startsWith('manual_stake_')) {
+        await bot.handleManualStakePrompt(chatId, messageId, data.replace('manual_stake_', ''));
       } else if (data.startsWith('stake_') || data.startsWith('exec_')) {
         const prefixLength = data.startsWith('stake_') ? 'stake_'.length : 'exec_'.length;
         const raw = data.slice(prefixLength);
