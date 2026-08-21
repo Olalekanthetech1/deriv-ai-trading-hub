@@ -171,8 +171,8 @@ function formatBrokerExecutionError(err: unknown): string {
   if (msg.includes('OfferingsValidationError') || msg.includes('Trading is not offered') || msg.includes('OfferingsInvalidSymbol')) {
     return 'Trading is currently not offered or available for this asset on your account type.';
   }
-  if (msg.includes('Input validation failed')) {
-    return 'Invalid parameter format sent to broker.';
+  if (msg.includes('Input validation failed') || msg.toLowerCase().includes('amount must be in 2 decimal') || msg.toLowerCase().includes('2 decimal')) {
+    return 'Invalid parameter format: Stake amount must be formatted to 2 decimal places.';
   }
   if (msg.includes('InsufficientBalance') || msg.toLowerCase().includes('insufficient balance')) {
     return 'Insufficient account balance to execute trade.';
@@ -1063,7 +1063,7 @@ export class TelegramBotController {
     const user = await this.getUser(chatId);
     if (!user) return;
 
-    const normalizedStake = Number(stake);
+    const normalizedStake = Math.round(Number(stake) * 100) / 100;
     if (!Number.isFinite(normalizedStake) || normalizedStake <= 0 || normalizedStake > 100000) {
       await this.sendOrEditScreen({
         chatId,
@@ -1327,7 +1327,8 @@ export class TelegramBotController {
           if (settlement.is_won) {
             break;
           } else {
-            currentStake = currentStake * scalingFactor;
+            const nextCalculated = currentStake * scalingFactor;
+            currentStake = Math.round(nextCalculated * 100) / 100;
           }
         }
       }

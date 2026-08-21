@@ -51,7 +51,8 @@ export async function POST(req: NextRequest) {
         const symbol = colonIdx > -1 ? rawState.slice(0, colonIdx) : rawState;
         const bannerMessageId = colonIdx > -1 ? Number(rawState.slice(colonIdx + 1)) : null;
 
-        const amount = Number(text.replace(/[^0-9.]/g, ''));
+        const rawAmount = Number(text.replace(/[^0-9.]/g, ''));
+        const amount = Number.isFinite(rawAmount) ? Math.round(rawAmount * 100) / 100 : Number.NaN;
         
         // Delete user's text message ("200") to keep chat clean
         await bot.safeSendApi('deleteMessage', { chat_id: chatId, message_id: msg.message_id });
