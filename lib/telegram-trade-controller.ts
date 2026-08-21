@@ -135,15 +135,32 @@ export class TelegramBotController {
     return eligible;
   }
 
-  async sendApi(method: string, payload: Record<string, any>) {
+  async sendApi(method: string, payload: Record<string, any>): Promise<any> {
     if (!this.botToken) throw new Error('TELEGRAM_BOT_TOKEN is not configured');
 
-    if (payload && payload.parse_mode === 'Markdown' && typeof payload.text === 'string') {
-      payload = {
-        ...payload,
-        text: markdownToHtml(payload.text),
-        parse_mode: 'HTML',
-      };
+    if (payload && payload.parse_mode === 'Markdown') {
+      if (typeof payload.text === 'string') {
+        payload = {
+          ...payload,
+          text: markdownToHtml(payload.text),
+          parse_mode: 'HTML',
+        };
+      } else if (typeof payload.caption === 'string') {
+        payload = {
+          ...payload,
+          caption: markdownToHtml(payload.caption),
+          parse_mode: 'HTML',
+        };
+      } else if (payload.media && typeof payload.media === 'object' && typeof payload.media.caption === 'string') {
+        payload = {
+          ...payload,
+          media: {
+            ...payload.media,
+            caption: markdownToHtml(payload.media.caption),
+            parse_mode: 'HTML',
+          },
+        };
+      }
     }
 
     let lastError: unknown = null;
@@ -161,8 +178,27 @@ export class TelegramBotController {
 
         if (res.ok && data?.ok === true) return data;
 
-        const retryable = res.status === 429 || res.status >= 500;
         const description = typeof data?.description === 'string' ? data.description : `HTTP ${res.status}`;
+
+        // Graceful automatic recovery for Markdown entity parsing failures
+        if (
+          description.includes("can't parse entities") ||
+          description.includes('parse entities') ||
+          description.includes('entity starting at')
+        ) {
+          if (payload.parse_mode) {
+            console.warn(`[Telegram API ${method}] Markdown parse failure: "${description}". Retrying without parse_mode...`);
+            const fallbackPayload = { ...payload };
+            delete fallbackPayload.parse_mode;
+            if (fallbackPayload.media && typeof fallbackPayload.media === 'object') {
+              fallbackPayload.media = { ...fallbackPayload.media };
+              delete fallbackPayload.media.parse_mode;
+            }
+            return await this.sendApi(method, fallbackPayload);
+          }
+        }
+
+        const retryable = res.status === 429 || res.status >= 500;
         lastError = new Error(`[Telegram API ${method}] ${description}`);
         if (!retryable || attempt === 3) throw lastError;
       } catch (err) {
@@ -318,6 +354,17 @@ export class TelegramBotController {
     }
 
     // Text-only screen or text length > 1024
+    if ((screenKey === 'trade_progress' || screenKey === 'trade_profit' || screenKey === 'trade_lost') && text.length <= 1024) {
+      const captionRes = await this.safeSendApi('editMessageCaption', {
+        chat_id: chatId,
+        message_id: messageId,
+        caption: text,
+        parse_mode: parseMode,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      });
+      if (captionRes) return captionRes;
+    }
+
     try {
       return await this.sendApi('editMessageText', {
         chat_id: chatId,
@@ -328,22 +375,38 @@ export class TelegramBotController {
       });
     } catch (err: any) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[sendOrEditScreen editMessageText fallback on screen ${screenKey}]:`, errMsg);
 
-      // If previous message was a photo message, editMessageText throws error ("message to edit has no text").
-      // Try editMessageCaption to update caption & keyboard under existing photo without breaking navigation!
-      if (text.length <= 1024) {
-        const captionRes = await this.safeSendApi('editMessageCaption', {
+      // Ignore "message is not modified" gracefully
+      if (errMsg.includes('message is not modified') || errMsg.includes('exactly the same')) {
+        return null;
+      }
+
+      // If previous message was a photo message, editMessageText throws ("message to edit has no text")
+      if (errMsg.includes('no text in the message to edit') || errMsg.includes('message to edit has no text')) {
+        if (text.length <= 1024) {
+          const captionRes = await this.safeSendApi('editMessageCaption', {
+            chat_id: chatId,
+            message_id: messageId,
+            caption: text,
+            parse_mode: parseMode,
+            ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+          });
+          if (captionRes) return captionRes;
+        }
+
+        // Controlled fallback if editMessageCaption fails or text > 1024: delete media message & send fresh text message
+        await this.safeSendApi('deleteMessage', { chat_id: chatId, message_id: messageId });
+        return await this.safeSendApi('sendMessage', {
           chat_id: chatId,
-          message_id: messageId,
-          caption: text,
+          text,
           parse_mode: parseMode,
           ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
         });
-        if (captionRes) return captionRes;
       }
 
-      // Controlled fallback if editMessageCaption fails or text > 1024: delete media message & send fresh text message
+      console.warn(`[sendOrEditScreen editMessageText fallback on screen ${screenKey}]:`, errMsg);
+
+      // Controlled fallback for any other error: delete previous message and send fresh message
       await this.safeSendApi('deleteMessage', { chat_id: chatId, message_id: messageId });
       return await this.safeSendApi('sendMessage', {
         chat_id: chatId,
@@ -745,15 +808,16 @@ export class TelegramBotController {
       }
 
       if (!rankingSnapshot || rankingSnapshot.rankings.length === 0) {
-        await this.safeSendApi('editMessageText', {
-          chat_id: chatId,
-          message_id: messageId,
+        await this.sendOrEditScreen({
+          chatId,
+          messageId,
+          screenKey: 'asset_select',
           text:
             `⚠️ *LIVE MARKET STREAM DEGRADED*\n\n` +
             `Unable to retrieve live AI model predictions from the signal engine. Per AGENTS.md safety rules, zero fallbacks or simulated values are permitted.\n\n` +
             `Please tap "🔄 Retry Scan" below to re-query the production signal pipeline.`,
-          parse_mode: 'Markdown',
-          reply_markup: {
+          parseMode: 'Markdown',
+          replyMarkup: {
             inline_keyboard: [
               [{ text: '🔄 Retry Scan', callback_data: 'menu_start_trade' }],
               [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
@@ -775,11 +839,12 @@ export class TelegramBotController {
 
     rankingSnapshot.rankings.forEach((res, index) => {
       const medal = index === 0 ? '🏆' : '✅';
-      leaderboardLines += `${medal} *${res.name}*: Win rate = *${res.winRate}%*\n`;
+      const cleanName = res.name ? res.name.replace(/_/g, ' ') : res.symbol;
+      leaderboardLines += `${medal} *${cleanName}*: Win rate = *${res.winRate}%*\n`;
       const btnIcon = index === 0 ? '🏆' : '📈';
       keyboardButtons.push([
         {
-          text: `${btnIcon} ${res.name}`,
+          text: `${btnIcon} ${cleanName}`,
           callback_data: `asset_${res.symbol}`,
         },
       ]);
@@ -814,12 +879,13 @@ export class TelegramBotController {
       `Please enter your custom stake amount in USD for *${symbol}* (e.g. \`15.50\`):\n\n` +
       `_Reply directly to this message with a number._`;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'manual_stake',
       text,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '❌ Cancel', callback_data: `asset_${symbol}` }]
         ]
@@ -874,12 +940,13 @@ export class TelegramBotController {
       });
     } catch (err) {
       const code = err instanceof Error ? err.message : 'AI_SIGNAL_UNAVAILABLE';
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
+      await this.sendOrEditScreen({
+        chatId,
+        messageId,
+        screenKey: 'signal_error',
         text: `⚠️ *Live AI Signal Unavailable*\n\n\`${code}\`\n\nNo trade can be executed until an authoritative signal is available.`,
-        parse_mode: 'Markdown',
-        reply_markup: {
+        parseMode: 'Markdown',
+        replyMarkup: {
           inline_keyboard: [[{ text: '🔙 Back to Assets', callback_data: 'menu_start_trade' }]],
         },
       });
@@ -892,35 +959,47 @@ export class TelegramBotController {
 
     const normalizedStake = Number(stake);
     if (!Number.isFinite(normalizedStake) || normalizedStake <= 0 || normalizedStake > 100000) {
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
+      await this.sendOrEditScreen({
+        chatId,
+        messageId,
+        screenKey: 'trade_error',
         text: '❌ Invalid stake amount.',
+        replyMarkup: { inline_keyboard: [[{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]] },
       });
       return;
     }
 
     if (!VALID_STAKES.has(normalizedStake) && normalizedStake !== Number(user.active_stake)) {
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
+      await this.sendOrEditScreen({
+        chatId,
+        messageId,
+        screenKey: 'trade_error',
         text: '❌ This stake is not an approved Telegram trading amount.',
+        replyMarkup: { inline_keyboard: [[{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]] },
       });
       return;
     }
 
     const sql = await this.getSql();
     if (!sql) {
-      await this.safeSendApi('editMessageText', { chat_id: chatId, message_id: messageId, text: '❌ Database unavailable. Trade blocked.' });
+      await this.sendOrEditScreen({
+        chatId,
+        messageId,
+        screenKey: 'trade_error',
+        text: '❌ Database unavailable. Trade blocked.',
+        replyMarkup: { inline_keyboard: [[{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]] },
+      });
       return;
     }
 
     const claimed = await claimTelegramTradeIntent(sql, idempotencyKey, chatId);
     if (!claimed) {
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
+      await this.sendOrEditScreen({
+        chatId,
+        messageId,
+        screenKey: 'trade_error',
         text: 'ℹ️ This Telegram trade request was already processed or is still in progress.',
+        replyMarkup: { inline_keyboard: [[{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]] },
       });
       return;
     }
@@ -953,17 +1032,56 @@ export class TelegramBotController {
     const maxSteps = isAuto ? (user.max_steps || 1) : 1;
     const scalingFactor = isAuto ? (Number(user.scaling_factor) || 1.0) : 1.0;
 
-    let sessionLedger = `Trade session initialized...\n\n`;
+    let initialSignal: LiveSignal;
+    try {
+      initialSignal = await this.requestLiveSignal(user, symbol);
+    } catch (err) {
+      const code = err instanceof Error ? err.message : 'AI_SIGNAL_UNAVAILABLE';
+      await this.sendOrEditScreen({
+        chatId,
+        messageId,
+        screenKey: 'trade_execution_error',
+        text: `⚠️ *Live AI Signal Unavailable*\n\n\`${code}\`\n\nNo trade can be executed until an authoritative signal is available.`,
+        parseMode: 'Markdown',
+        replyMarkup: {
+          inline_keyboard: [[{ text: '🔙 Back to Assets', callback_data: 'menu_start_trade' }]],
+        },
+      });
+      return;
+    }
+
+    const dirLabel = initialSignal.prediction.signal === 'CALL' ? 'Buy ↗️' : 'Sell ↘️';
+    const strategyName = user.autotrade_strategy
+      ? user.autotrade_strategy.charAt(0).toUpperCase() + user.autotrade_strategy.slice(1)
+      : 'Balanced';
+    const cleanSymbolName = symbol.replace(/_/g, ' ');
+
+    const sessionHeader =
+      `🔹 *Selected asset:* \`${cleanSymbolName}\`\n` +
+      `🎯 *Direction:* *${dirLabel}*\n` +
+      `💵 *Amount:* \`${normalizedStake.toFixed(2)} USD\`\n` +
+      `⏱ *Timeframe:* \`${initialSignal.executionPlan.selectedHorizon.label}\`\n` +
+      `⚖️ *Strategy:* \`${strategyName}\`\n\n` +
+      `Trade session initialized...\n\n`;
+
+    let sessionLedger = sessionHeader;
     let totalNetProfit = 0;
     let finalBalance: any = null;
     let anyTradeExecuted = false;
     let activeStep = 1;
     let activeStake = normalizedStake;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'trade_progress',
       text: sessionLedger,
+      parseMode: 'Markdown',
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: '⚡ Initializing Trade Session...', callback_data: 'noop' }]
+        ]
+      }
     });
 
     const client = new DerivAuthenticatedClient(token);
@@ -996,13 +1114,20 @@ export class TelegramBotController {
           anyTradeExecuted = true;
           
           const pendingLine = `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> Pending...`;
-          await this.safeSendApi('editMessageText', {
-            chat_id: chatId,
-            message_id: messageId,
+          await this.sendOrEditScreen({
+            chatId,
+            messageId,
+            screenKey: 'trade_progress',
             text: sessionLedger + pendingLine,
+            parseMode: 'Markdown',
+            replyMarkup: {
+              inline_keyboard: [
+                [{ text: `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> Pending...`, callback_data: 'noop' }]
+              ]
+            }
           });
 
-          const signal = await this.requestLiveSignal(user, symbol);
+          const signal = (step === 1 && tradeIdx === 1) ? initialSignal : await this.requestLiveSignal(user, symbol);
           const contractType = signal.prediction.signal === 'CALL' ? 'CALL' : 'PUT';
           const selectedHorizon = signal.executionPlan.selectedHorizon;
 
@@ -1075,6 +1200,23 @@ export class TelegramBotController {
           const icon = settlement.is_won ? '🟢' : settlement.is_settled ? '🔴' : '⚠️';
           const resultStr = settlement.is_won ? `+$${profit.toFixed(2)} USD` : `-$${Math.abs(profit).toFixed(2)} USD`;
           sessionLedger += `${icon} Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> ${resultStr}\n`;
+
+          const stepStatusBtn = settlement.is_won
+            ? `🟢 Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> +$${profit.toFixed(2)} USD`
+            : `🔴 Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> -$${Math.abs(profit).toFixed(2)} USD`;
+
+          await this.sendOrEditScreen({
+            chatId,
+            messageId,
+            screenKey: 'trade_progress',
+            text: sessionLedger,
+            parseMode: 'Markdown',
+            replyMarkup: {
+              inline_keyboard: [
+                [{ text: stepStatusBtn, callback_data: 'noop' }]
+              ]
+            }
+          });
           
           if (settlement.is_won) {
             break;
@@ -1323,17 +1465,18 @@ export class TelegramBotController {
     const user = await this.getUser(chatId);
     if (!user) return;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings',
       text:
         `⚙️ *Custom Settings*\n\n` +
         `📊 *Scaling factor:* \`${Number(user.scaling_factor).toFixed(2)}\`\n` +
         `🔄 *Max Steps:* \`${user.max_steps}\`\n` +
         `📈 *Max Trades:* \`${user.max_trades}\`\n\n` +
         `Set up your strategy:`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '📊 Scaling factor', callback_data: 'adjust_scale_menu' }],
           [{ text: '🔄 Max Steps', callback_data: 'adjust_steps_menu' }],
@@ -1348,15 +1491,16 @@ export class TelegramBotController {
     const user = await this.getUser(chatId);
     if (!user) return;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings',
       text:
         `📊 *ADJUST SCALING FACTOR*\n` +
         `_Configure the multiplier applied to recovery trade sizes._\n\n` +
         `📊 *Current Scaling Factor:* \`${Number(user.scaling_factor).toFixed(2)}\``,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [
             { text: '➖ 0.10', callback_data: 'custom_scale_down' },
@@ -1372,15 +1516,16 @@ export class TelegramBotController {
     const user = await this.getUser(chatId);
     if (!user) return;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings',
       text:
         `🔄 *ADJUST MAX RECOVERY STEPS*\n` +
         `_Configure the maximum sequence steps for automated recovery._\n\n` +
         `🔄 *Current Max Steps:* \`${user.max_steps}\``,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [
             { text: '➖ 1', callback_data: 'custom_steps_down' },
@@ -1396,15 +1541,16 @@ export class TelegramBotController {
     const user = await this.getUser(chatId);
     if (!user) return;
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings',
       text:
         `📈 *ADJUST MAX TRADES*\n` +
         `_Configure the maximum overall concurrent active trades allowed._\n\n` +
         `📈 *Current Max Trades:* \`${user.max_trades}\``,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [
             { text: '➖ 1', callback_data: 'custom_trades_down' },
@@ -1422,15 +1568,16 @@ export class TelegramBotController {
 
     const currentLang = user.language === 'es' ? 'Español 🇪🇸' : user.language === 'fr' ? 'Français 🇫🇷' : 'English 🇺🇸';
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings',
       text:
         `🌐 *LANGUAGE SETTINGS*\n` +
         `_Select your preferred interface language_\n\n` +
         `🌐 *Active Language:* \`${currentLang}\``,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [
             { text: '🇺🇸 English', callback_data: 'set_lang_en' },
@@ -1451,15 +1598,16 @@ export class TelegramBotController {
       ? `${user.active_duration_value} ${user.active_duration_unit.toUpperCase()}`
       : 'Unknown';
 
-    await this.safeSendApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
+    await this.sendOrEditScreen({
+      chatId,
+      messageId,
+      screenKey: 'settings',
       text:
         `⏱ *EXPIRATION TIME SETTINGS*\n\n` +
         `Current Setting: \`${currentText}\`\n\n` +
         `Select your preferred trade expiration. Selecting a specific duration locks execution strictly to that choice. Selecting Auto lets the production AI ensemble dynamically optimize expiration for maximum confidence.`,
-      parse_mode: 'Markdown',
-      reply_markup: {
+      parseMode: 'Markdown',
+      replyMarkup: {
         inline_keyboard: [
           [{ text: '🤖 Auto (AI Optimal)', callback_data: 'set_dur_0_auto' }],
           [{ text: '5 Ticks', callback_data: 'set_dur_5_t' }, { text: '10 Ticks', callback_data: 'set_dur_10_t' }],

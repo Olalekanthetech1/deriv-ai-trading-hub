@@ -131,7 +131,9 @@ export async function POST(req: NextRequest) {
         console.warn('[Telegram Callback Ack Warning]:', err instanceof Error ? err.message : 'unknown');
       }
 
-      if (data === 'nav_main_menu') {
+      if (data === 'noop') {
+        return NextResponse.json({ ok: true });
+      } else if (data === 'nav_main_menu') {
         await bot.renderMainTerminal(chatId, messageId);
       } else if (data === 'menu_start_trade') {
         await bot.renderTradeModeSelection(chatId, messageId);
