@@ -7,7 +7,7 @@ import {
   isSymbolApprovedForTelegram,
 } from './ops-runtime-config';
 import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';
-import { getValidMarketRankingSnapshot, refreshLiveMarketRankings } from './market-ranking-cache';
+import { getValidMarketRankingSnapshot, refreshLiveMarketRankings, clearMarketRankingCache } from './market-ranking-cache';
 import { getDbConnectionString, initDbSchema } from './db';
 import { neon } from '@neondatabase/serverless';
 import { generateDailyOperationsSummary } from './telegram-telemetry-alert-engine';
@@ -579,6 +579,7 @@ export class TelegramAdminController {
       disabledSymbols: nextDisabled,
       updatedBy: `telegram_admin_${adminUserId}`,
     });
+    await clearMarketRankingCache();
 
     const isNowDisabled = nextDisabled.includes(upperSym);
     const statusMsg = isNowDisabled ? `🔴 Disabled symbol *${upperSym}*` : `🟢 Approved symbol *${upperSym}*`;
@@ -697,6 +698,7 @@ export class TelegramAdminController {
       disabledSymbols: nextDisabled,
       updatedBy: `telegram_admin_${adminUserId}`,
     });
+    await clearMarketRankingCache();
 
     const isNowDisabled = nextDisabled.includes(upperSym);
     const statusMsg = isNowDisabled ? `🔴 Disabled symbol *${upperSym}*` : `🟢 Approved symbol *${upperSym}*`;

@@ -4,7 +4,7 @@ import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall
 import { refreshLiveMarketRankings, type LiveMarketRankingSnapshot } from './market-ranking-cache';
 import { neon } from '@neondatabase/serverless';
 import { getDbConnectionString } from './db';
-import { getGlobalTradingCircuitBreakerConfig, getTelegramBrandingRuntimeConfig } from './ops-runtime-config';
+import { getGlobalTradingCircuitBreakerConfig, getTelegramBrandingRuntimeConfig, getTelegramAssetGovernanceConfig, isSymbolApprovedForTelegram } from './ops-runtime-config';
 import {
   claimTelegramTradeIntent,
   decryptSecret,
@@ -203,8 +203,9 @@ export class TelegramBotController {
 
   private async getAuthoritativeTelegramSymbols(): Promise<RiseFallSymbolMetadata[]> {
     const discovered = await getLiveRiseFallSymbols(true, false);
+    const gov = await getTelegramAssetGovernanceConfig();
     const eligible = discovered.filter(
-      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && item.categoryKeys.includes('volatility')
+      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && isSymbolApprovedForTelegram(item.symbol, item.categoryKeys, gov)
     );
     if (eligible.length === 0) throw new Error('TELEGRAM_SYMBOL_UNIVERSE_EMPTY');
     return eligible;

@@ -34,6 +34,25 @@ const MAX_ALLOWED_DATA_AGE_MS = 10000; // 10 seconds absolute ceiling
 let inMemorySnapshot: LiveMarketRankingSnapshot | null = null;
 let activeRefreshPromise: Promise<LiveMarketRankingSnapshot> | null = null;
 
+/**
+ * Immediately purges and deletes the market ranking cache from both in-memory state and database storage.
+ */
+export async function clearMarketRankingCache(): Promise<void> {
+  inMemorySnapshot = null;
+  activeRefreshPromise = null;
+  try {
+    const sql = getDb();
+    if (sql && (await initDbSchema())) {
+      await sql`
+        DELETE FROM market_assets
+        WHERE symbol = 'GLOBAL_RANKINGS'
+      `;
+    }
+  } catch (err) {
+    console.warn('[MarketRankingCache] Error clearing DB market ranking cache:', err instanceof Error ? err.message : 'unknown');
+  }
+}
+
 function getInternalBaseUrl(): string {
   const configured = process.env.APP_URL || process.env.RENDER_BACKEND_URL;
   if (configured) return configured.replace(/\/$/, '');
