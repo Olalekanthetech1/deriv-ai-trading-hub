@@ -198,8 +198,9 @@ export class TelegramBotController {
 
   private async getAuthoritativeTelegramSymbols(): Promise<RiseFallSymbolMetadata[]> {
     const discovered = await getLiveRiseFallSymbols(true, false);
+    const ALLOWED_CATEGORIES = new Set(['volatility_standard', 'volatility_1s', 'jump']);
     const eligible = discovered.filter(
-      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && item.categoryKeys.includes('volatility')
+      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && item.categoryKeys.some((k) => ALLOWED_CATEGORIES.has(k))
     );
     if (eligible.length === 0) throw new Error('TELEGRAM_SYMBOL_UNIVERSE_EMPTY');
     return eligible;
