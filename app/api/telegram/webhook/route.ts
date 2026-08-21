@@ -117,6 +117,12 @@ export async function POST(req: NextRequest) {
       if (data === 'nav_main_menu') {
         await bot.renderMainTerminal(chatId, messageId);
       } else if (data === 'menu_start_trade') {
+        await bot.renderTradeModeSelection(chatId, messageId);
+      } else if (data === 'mode_single_trade') {
+        await bot.updateUser(chatId, { is_autotrading: false });
+        await bot.renderAssetSelection(chatId, messageId);
+      } else if (data === 'mode_auto_strategy') {
+        await bot.updateUser(chatId, { is_autotrading: true });
         await bot.renderAssetSelection(chatId, messageId);
       } else if (data.startsWith('asset_')) {
         await bot.renderSignalCard(chatId, messageId, data.replace('asset_', ''));

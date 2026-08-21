@@ -1,5 +1,6 @@
 import { getDb, initDbSchema } from './db';
 import { getLiveRiseFallSymbols } from './rise-fall-symbols';
+import { fetchDerivTickHistory } from './ticks-helper';
 
 export interface RankedAssetItem {
   symbol: string;
@@ -22,13 +23,14 @@ export interface LiveMarketRankingSnapshot {
   validationStatus: 'VALIDATED' | 'DEGRADED' | 'EXPIRED';
   modelVersion?: string;
   featureSchemaVersion?: string;
+  medianCadenceMs?: number;
 }
 
 const CACHE_KEY = 'live_market_rankings_v1';
-const MAX_ALLOWED_DATA_AGE_MS = 25000; // 25 seconds freshness gate
+const MAX_ALLOWED_DATA_AGE_MS = 10000; // 10 seconds absolute ceiling
 
 let inMemorySnapshot: LiveMarketRankingSnapshot | null = null;
-let isRefreshing = false;
+let activeRefreshPromise: Promise<LiveMarketRankingSnapshot> | null = null;
 
 function getInternalBaseUrl(): string {
   const configured = process.env.APP_URL || process.env.RENDER_BACKEND_URL;
@@ -41,6 +43,14 @@ function getInternalBaseUrl(): string {
  */
 export async function getValidMarketRankingSnapshot(): Promise<LiveMarketRankingSnapshot | null> {
   const now = Date.now();
+  
+  const isValidAge = (snap: LiveMarketRankingSnapshot, currentAge: number) => {
+     // Cadence-derived freshness: assume prediction holds for ~4 ticks
+     const cadence = snap.medianCadenceMs || 2000; // default 2s
+     const cadenceThreshold = Math.max(cadence * 4, 6000); // minimum 6s tolerance
+     const effectiveFreshness = Math.min(MAX_ALLOWED_DATA_AGE_MS, cadenceThreshold);
+     return currentAge >= 0 && currentAge <= effectiveFreshness;
+  };
 
   // 1. Check in-memory snapshot
   if (inMemorySnapshot) {
@@ -48,8 +58,7 @@ export async function getValidMarketRankingSnapshot(): Promise<LiveMarketRanking
     if (
       inMemorySnapshot.validationStatus === 'VALIDATED' &&
       inMemorySnapshot.rankings.length > 0 &&
-      age >= 0 &&
-      age <= MAX_ALLOWED_DATA_AGE_MS
+      isValidAge(inMemorySnapshot, age)
     ) {
       return {
         ...inMemorySnapshot,
@@ -71,7 +80,7 @@ export async function getValidMarketRankingSnapshot(): Promise<LiveMarketRanking
       const cached = rows?.[0]?.cached as LiveMarketRankingSnapshot | null | undefined;
       if (cached?.rankings?.length && cached.validationStatus === 'VALIDATED') {
         const age = now - new Date(cached.generatedAt).getTime();
-        if (age >= 0 && age <= MAX_ALLOWED_DATA_AGE_MS) {
+        if (isValidAge(cached, age)) {
           inMemorySnapshot = cached;
           return {
             ...cached,
@@ -93,17 +102,23 @@ export async function getValidMarketRankingSnapshot(): Promise<LiveMarketRanking
  * Stage 2: Deep ML ensemble evaluation on top candidates
  * Updates cache atomically and persists snapshot.
  */
-export async function refreshLiveMarketRankings(): Promise<LiveMarketRankingSnapshot> {
-  if (isRefreshing && inMemorySnapshot) {
-    return inMemorySnapshot;
+export async function refreshLiveMarketRankings(
+  onProgress?: (stage: 'data_stream' | 'ai_analysis' | 'target_locked') => Promise<void> | void
+): Promise<LiveMarketRankingSnapshot> {
+  // Single-flight request coalescing: concurrent misses join the active promise
+  if (activeRefreshPromise) {
+    return activeRefreshPromise;
   }
 
-  isRefreshing = true;
-  const startTime = Date.now();
+  activeRefreshPromise = (async () => {
+    const startTime = Date.now();
 
-  try {
+    try {
     // 1. Discover active volatility symbols
     const discovered = await getLiveRiseFallSymbols(true, false);
+    
+    if (onProgress) await onProgress('data_stream');
+
     const eligible = discovered.filter(
       (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && item.categoryKeys.includes('volatility')
     );
@@ -122,6 +137,8 @@ export async function refreshLiveMarketRankings(): Promise<LiveMarketRankingSnap
     });
 
     const topCandidates = stage1Candidates.slice(0, 5);
+
+    if (onProgress) await onProgress('ai_analysis');
 
     // Stage 2: Deep Ensemble ML Inference
     const baseUrl = getInternalBaseUrl();
@@ -176,6 +193,27 @@ export async function refreshLiveMarketRankings(): Promise<LiveMarketRankingSnap
 
     scanResults.sort((a, b) => b.winRate - a.winRate);
 
+    // Derive cadence from top asset
+    let medianCadenceMs = 2000;
+    try {
+      if (scanResults.length > 0) {
+        const topSymbol = scanResults[0].symbol;
+        const ticks = await fetchDerivTickHistory(topSymbol, 15, 'latest', 1);
+        if (ticks.length >= 5) {
+          const sorted = ticks.slice().sort((a, b) => a.timestamp - b.timestamp);
+          const intervals = sorted.slice(1).map((t, i) => t.timestamp - sorted[i].timestamp).filter(v => v > 0);
+          if (intervals.length > 0) {
+            intervals.sort((a, b) => a - b);
+            medianCadenceMs = intervals[Math.floor(intervals.length / 2)];
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[MarketRankingCache] Cadence discovery failed:', err instanceof Error ? err.message : 'unknown');
+    }
+
+    if (onProgress) await onProgress('target_locked');
+
     const snapshot: LiveMarketRankingSnapshot = {
       generatedAt: new Date().toISOString(),
       tickTimestamp: Date.now(),
@@ -185,6 +223,7 @@ export async function refreshLiveMarketRankings(): Promise<LiveMarketRankingSnap
       validationStatus: 'VALIDATED',
       modelVersion: scanResults[0]?.modelVersion || 'v2-production',
       featureSchemaVersion: 'v2-microstructure',
+      medianCadenceMs,
     };
 
     inMemorySnapshot = snapshot;
@@ -205,7 +244,10 @@ export async function refreshLiveMarketRankings(): Promise<LiveMarketRankingSnap
     }
 
     return snapshot;
-  } finally {
-    isRefreshing = false;
-  }
+    } finally {
+      activeRefreshPromise = null;
+    }
+  })();
+
+  return activeRefreshPromise;
 }

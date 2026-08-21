@@ -441,6 +441,33 @@ export class TelegramBotController {
     });
   }
 
+  async renderTradeModeSelection(chatId: number, messageId: number) {
+    const user = await this.getUser(chatId);
+    if (!user) return this.renderUnlinkedScreen(chatId);
+
+    const text = 
+      `⚙️ *SELECT TRADING MODE*\n\n` +
+      `How would you like to execute this trade?\n\n` +
+      `🎯 *Manual Single Trade*\n` +
+      `Executes exactly one trade with your selected stake. No recovery steps.\n\n` +
+      `🤖 *Automated Strategy Session*\n` +
+      `Uses your preset configuration (Max Steps: \`${user.max_steps || 1}\`, Scaling: \`${Number(user.scaling_factor || 1.0).toFixed(2)}x\`). Automatically recovers losses via Martingale.\n`;
+
+    await this.safeSendApi('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🎯 Manual Single Trade', callback_data: 'mode_single_trade' }],
+          [{ text: '🤖 Automated Strategy Session', callback_data: 'mode_auto_strategy' }],
+          [{ text: '🔙 Main Menu', callback_data: 'nav_main_menu' }],
+        ],
+      },
+    });
+  }
+
   async renderAssetSelection(chatId: number, messageId: number) {
     const user = await this.getUser(chatId);
     if (!user) return this.renderUnlinkedScreen(chatId);
@@ -450,39 +477,50 @@ export class TelegramBotController {
 
     if (!rankingSnapshot) {
       // Cache Miss or Expired -> Show dynamic progress stages while running Option 2 refresh pipeline
-      const stage1Text =
+      const sendProgress = async (text: string) => {
+        await this.safeSendApi('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: text,
+          parse_mode: 'Markdown',
+        }).catch(err => console.warn('[Telegram Edit Error]:', err instanceof Error ? err.message : 'unknown'));
+      };
+
+      const step1Text = 
         `🤖 *AI IS ANALYZING THE MARKET*\n` +
-        `_Optimizing your next trades..._\n\n` +
-        `📡 *TERMINAL:* Launching...\n` +
-        `📶 *Data stream:* Connecting...\n` +
-        `🤖 *AI analysis:* Initializing...\n` +
-        `⌛ *Next Signal:* Pending...`;
-
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
-        text: stage1Text,
-        parse_mode: 'Markdown',
-      });
-
-      // Update Stage 2 status card
-      const stage2Text =
-        `🤖 *AI IS ANALYZING THE MARKET*\n` +
-        `_Optimizing your next trades..._\n\n` +
-        `📡 *TERMINAL:* Launched ✅\n` +
-        `📶 *Data stream:* Connected ✅\n` +
-        `🤖 *AI analysis:* Running 2-stage ensemble ranking...\n` +
-        `⌛ *Next Signal:* Pending...`;
-
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
-        text: stage2Text,
-        parse_mode: 'Markdown',
-      });
+        `_Establishing secure connection..._\n\n` +
+        `📡 TERMINAL: Connecting to broker... ⏳`;
+      
+      await sendProgress(step1Text);
 
       try {
-        rankingSnapshot = await refreshLiveMarketRankings();
+        rankingSnapshot = await refreshLiveMarketRankings(async (stage) => {
+          if (stage === 'data_stream') {
+            const step2Text = 
+              `🤖 *AI IS ANALYZING THE MARKET*\n` +
+              `_Ingesting live market data..._\n\n` +
+              `📡 TERMINAL: Launched ✅\n` +
+              `📊 Data stream: Fetching live ticks... 🔄`;
+            await sendProgress(step2Text);
+          } else if (stage === 'ai_analysis') {
+            const step3Text = 
+              `🤖 *AI IS ANALYZING THE MARKET*\n` +
+              `_Evaluating market anomalies..._\n\n` +
+              `📡 TERMINAL: Launched ✅\n` +
+              `📊 Data stream: Connected ✅\n` +
+              `🧠 AI analysis: Running multi-horizon ensemble... ⚙️`;
+            await sendProgress(step3Text);
+          } else if (stage === 'target_locked') {
+            const step4Text = 
+              `🤖 *AI IS ANALYZING THE MARKET*\n` +
+              `_Optimizing your next trades..._\n\n` +
+              `📡 TERMINAL: Launched ✅\n` +
+              `📊 Data stream: Connected ✅\n` +
+              `🧠 AI analysis: Signals ranked ✅\n` +
+              `🎯 Target locked: Loading highest win rates... ⏳`;
+            await sendProgress(step4Text);
+          }
+        });
       } catch (err) {
         console.warn('[Live Ranking Refresh Error]:', err instanceof Error ? err.message : 'unknown');
       }
@@ -668,120 +706,163 @@ export class TelegramBotController {
       return;
     }
 
+    const isAuto = user.is_autotrading;
+    const maxTrades = isAuto ? (user.max_trades || 1) : 1;
+    const maxSteps = isAuto ? (user.max_steps || 1) : 1;
+    const scalingFactor = isAuto ? (Number(user.scaling_factor) || 1.0) : 1.0;
+
+    let sessionLedger = `Trade session initialized...\n\n`;
+    let totalNetProfit = 0;
+    let finalBalance: any = null;
+    let anyTradeExecuted = false;
+
     await this.safeSendApi('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
-      text: `⚡ *Trade Processing*\n\`$${normalizedStake.toFixed(2)}\` on \`${symbol}\`\n\nRefreshing the production AI signal and authoritative horizon...`,
-      parse_mode: 'Markdown',
+      text: sessionLedger,
     });
 
     const client = new DerivAuthenticatedClient(token);
     try {
-      const signal = await this.requestLiveSignal(user, symbol);
-      const contractType = signal.prediction.signal === 'CALL' ? 'CALL' : 'PUT';
-      const selectedHorizon = signal.executionPlan.selectedHorizon;
       const targetAccountId = await this.resolveTargetAccountId(client, user, chatId);
       await client.connect(targetAccountId);
 
-      const proposal = await client.getProposal({
-        amount: normalizedStake,
-        currency: user.currency,
-        contract_type: contractType,
-        duration: selectedHorizon.value,
-        duration_unit: selectedHorizon.unit,
-        symbol,
-      });
-      if (!proposal) throw new Error('DERIV_PROPOSAL_UNAVAILABLE');
+      for (let tradeIdx = 1; tradeIdx <= maxTrades; tradeIdx++) {
+        let currentStake = normalizedStake;
 
-      const buyRes = await client.buyContract(proposal.id, proposal.ask_price);
-      if (!buyRes) throw new Error('DERIV_BUY_REJECTED');
+        for (let step = 1; step <= maxSteps; step++) {
+          anyTradeExecuted = true;
+          
+          const pendingLine = `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> Pending...`;
+          await this.safeSendApi('editMessageText', {
+            chat_id: chatId,
+            message_id: messageId,
+            text: sessionLedger + pendingLine,
+          });
 
-      await sql`
-        UPDATE telegram_trade_intents
-        SET contract_id = ${buyRes.contract_id}, updated_at = NOW()
-        WHERE idempotency_key = ${idempotencyKey}
-      `;
+          const signal = await this.requestLiveSignal(user, symbol);
+          const contractType = signal.prediction.signal === 'CALL' ? 'CALL' : 'PUT';
+          const selectedHorizon = signal.executionPlan.selectedHorizon;
 
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
-        text:
-          `⚡ *Live Trade Active*\n` +
-          `• *Asset:* \`${symbol}\`\n` +
-          `• *Direction:* \`${contractType}\`\n` +
-          `• *Stake:* \`$${normalizedStake.toFixed(2)}\`\n` +
-          `• *Horizon:* \`${selectedHorizon.label}\`\n` +
-          `• *Confidence:* \`${signal.prediction.confidence.toFixed(1)}%\`\n` +
-          `• *Model:* \`${signal.prediction.modelVersion}\`\n` +
-          `• *Contract:* \`#${buyRes.contract_id}\`\n\n` +
-          `_Waiting for broker settlement..._`,
-        parse_mode: 'Markdown',
-      });
+          const proposal = await client.getProposal({
+            amount: currentStake,
+            currency: user.currency,
+            contract_type: contractType,
+            duration: selectedHorizon.value,
+            duration_unit: selectedHorizon.unit,
+            symbol,
+          });
+          if (!proposal) throw new Error('DERIV_PROPOSAL_UNAVAILABLE');
 
-      const settlement = await client.waitForContractSettlement(buyRes.contract_id, 45000);
-      const newBal = await client.getBalance();
-      const profit = Number(settlement.profit || 0);
-      const payout = Number(settlement.payout || 0);
+          const buyRes = await client.buyContract(proposal.id, proposal.ask_price);
+          if (!buyRes) throw new Error('DERIV_BUY_REJECTED');
 
-      await sql`
-        INSERT INTO telegram_trade_logs (
-          chat_id,
-          contract_id,
-          symbol,
-          contract_type,
-          stake,
-          payout,
-          profit,
-          status,
-          execution_plan_id,
-          model_id,
-          win_probability,
-          raw_response
-        ) VALUES (
-          ${chatId},
-          ${buyRes.contract_id},
-          ${symbol},
-          ${contractType},
-          ${normalizedStake},
-          ${payout},
-          ${profit},
-          ${settlement.is_won ? 'won' : settlement.is_settled ? 'lost' : 'timeout'},
-          ${signal.executionPlan.executionPlanId},
-          ${signal.prediction.modelVersion},
-          ${signal.prediction.confidence / 100},
-          ${JSON.stringify({ signal, settlement, buyRes })}
-        )
-      `;
+          await sql`
+            UPDATE telegram_trade_intents
+            SET contract_id = ${buyRes.contract_id}, updated_at = NOW()
+            WHERE idempotency_key = ${idempotencyKey}
+          `;
 
-      await updateTelegramTradeIntent(sql, idempotencyKey, 'completed', buyRes.contract_id);
+          let durationMs = 0;
+          switch (selectedHorizon.unit) {
+            case 't': durationMs = selectedHorizon.value * 2500; break; // ~2.5s per tick buffer
+            case 's': durationMs = selectedHorizon.value * 1000; break;
+            case 'm': durationMs = selectedHorizon.value * 60000; break;
+            case 'h': durationMs = selectedHorizon.value * 3600000; break;
+            case 'd': durationMs = selectedHorizon.value * 86400000; break;
+          }
+          const dynamicTimeoutMs = durationMs + 30000; // 30 second settlement buffer
 
-      const resultText = settlement.is_won
-        ? `🎉 *PROFIT*\n\n*Result:* *+$${profit.toFixed(2)}*\n💵 *Balance:* *$${Number(newBal.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${newBal.currency}*`
-        : settlement.is_settled
-          ? `🔴 *TRADE CLOSED*\n\n*Result:* *$${profit.toFixed(2)}*\n💵 *Balance:* *$${Number(newBal.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${newBal.currency}*`
-          : `⚠️ *Settlement not confirmed within the monitoring window.*\n\n💵 *Latest Balance:* *$${Number(newBal.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${newBal.currency}*`;
+          const settlement = await client.waitForContractSettlement(buyRes.contract_id, dynamicTimeoutMs);
+          finalBalance = await client.getBalance();
+          const profit = Number(settlement.profit || 0);
+          const payout = Number(settlement.payout || 0);
 
-      await this.safeSendApi('editMessageText', {
-        chat_id: chatId,
-        message_id: messageId,
-        text: `${resultText}\n\n🧾 *Execution Plan:* \`${signal.executionPlan.executionPlanId}\``,
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🚀 New Trade', callback_data: 'menu_start_trade' }],
-            [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
-          ],
-        },
-      });
+          totalNetProfit += profit;
+
+          await sql`
+            INSERT INTO telegram_trade_logs (
+              chat_id,
+              contract_id,
+              symbol,
+              contract_type,
+              stake,
+              payout,
+              profit,
+              status,
+              execution_plan_id,
+              model_id,
+              win_probability,
+              raw_response
+            ) VALUES (
+              ${chatId},
+              ${buyRes.contract_id},
+              ${symbol},
+              ${contractType},
+              ${currentStake},
+              ${payout},
+              ${profit},
+              ${settlement.is_won ? 'won' : settlement.is_settled ? 'lost' : 'timeout'},
+              ${signal.executionPlan.executionPlanId},
+              ${signal.prediction.modelVersion},
+              ${signal.prediction.confidence / 100},
+              ${JSON.stringify({ signal, settlement, buyRes })}
+            )
+          `;
+
+          const icon = settlement.is_won ? '🟢' : settlement.is_settled ? '🔴' : '⚠️';
+          const resultStr = settlement.is_won ? `+$${profit.toFixed(2)} USD` : `-$${Math.abs(profit).toFixed(2)} USD`;
+          sessionLedger += `${icon} Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> ${resultStr}\n`;
+          
+          if (settlement.is_won) {
+            break;
+          } else {
+            currentStake = currentStake * scalingFactor;
+          }
+        }
+      }
+
+      await updateTelegramTradeIntent(sql, idempotencyKey, 'completed');
+
+      if (anyTradeExecuted && finalBalance) {
+        const victoryStr = totalNetProfit > 0 
+          ? `🎉 *Profit!*\nSession completed successfully\n`
+          : totalNetProfit < 0
+            ? `⚠️ *Loss!*\nSession completed with a deficit\n`
+            : `ℹ️ *Session completed.*\n`;
+            
+        const finalMessage = 
+          `${sessionLedger}\n` +
+          `${victoryStr}` +
+          `Result: ${totalNetProfit >= 0 ? '' : ''}${totalNetProfit.toFixed(2)} USD\n` +
+          `Balance: ${Number(finalBalance.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${finalBalance.currency}\n\n` +
+          `Choose your next step...`;
+
+        await this.safeSendApi('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: finalMessage,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🚀 New Trade', callback_data: 'menu_start_trade' }],
+              [{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }],
+            ],
+          },
+        });
+      }
+
     } catch (err) {
       await updateTelegramTradeIntent(sql, idempotencyKey, 'failed');
       const rawError = err instanceof Error ? err.message : 'unknown';
       console.error('[Trade Execution Failed]:', rawError);
       const userMessage = formatBrokerExecutionError(err);
+      
+      const partialLedger = sessionLedger ? `${sessionLedger}\n` : '';
       await this.safeSendApi('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
-        text: `❌ *Trade blocked*\n\n\`${userMessage}\``,
+        text: `${partialLedger}❌ *Trade blocked*\n\n\`${userMessage}\``,
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [[{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]],
