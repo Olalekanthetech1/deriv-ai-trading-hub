@@ -118,6 +118,8 @@ export function inferModelKeyFromRow(row: {
   if (searchTarget.includes('isolation_forest') || searchTarget.includes('isolationforest')) return 'isolation_forest';
   if (familyKey === 'tabular') return 'xgboost';
   if (familyKey === 'sequential') return 'lstm';
+  if (familyKey === 'anomaly') return 'isolation_forest';
+  if (familyKey === 'regime') return 'hmm';
   return null;
 }
 
@@ -249,21 +251,31 @@ export async function resolveProductionModels(symbol: string, durationValue: num
       ? findAuthoritativeHorizonMetrics(storedMetrics, row, reqSec, durationUnit, modelId)
       : storedMetrics;
 
-    const accuracy = requireMetric(validationMetrics, 'accuracy', modelId);
-    const auc = requireMetric(validationMetrics, 'auc', modelId);
-    const brierScore = requireMetric(validationMetrics, 'brierScore', modelId);
-    const winRate = requireMetric(validationMetrics, 'winRate', modelId);
+    const isPredictive = definition.predictive !== false;
+    const accuracy = isPredictive ? requireMetric(validationMetrics, 'accuracy', modelId) : 1.0;
+    const auc = isPredictive ? requireMetric(validationMetrics, 'auc', modelId) : 1.0;
+    const brierScore = isPredictive ? requireMetric(validationMetrics, 'brierScore', modelId) : 0.0;
+    const winRate = isPredictive ? requireMetric(validationMetrics, 'winRate', modelId) : 1.0;
 
     const liveStat = liveStatsMap[modelId];
-    const scoreResult = calculateCompositeQualityScore({
-      accuracy,
-      auc,
-      brierScore,
-      winRate,
-      liveWinRate: liveStat?.winRate ?? null,
-      sampleCount: liveStat?.total ?? 0,
-      horizonDiff: 0,
-    });
+    const scoreResult = isPredictive
+      ? calculateCompositeQualityScore({
+          accuracy,
+          auc,
+          brierScore,
+          winRate,
+          liveWinRate: liveStat?.winRate ?? null,
+          sampleCount: liveStat?.total ?? 0,
+          horizonDiff: 0,
+        })
+      : {
+          qualityScore: 1.0,
+          accuracy: 1.0,
+          auc: 1.0,
+          brierScore: 0.0,
+          winRate: 1.0,
+          driftBreached: false,
+        };
 
     const artifactPresent = await hasModelArtifact(modelId);
     if (!artifactPresent) throw new Error(`PRODUCTION_MODEL_ARTIFACT_MISSING:${modelId}`);

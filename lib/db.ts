@@ -550,7 +550,10 @@ export async function promoteModelInRegistry(modelId: string, symbol: string, ho
     const durVal = targetRow.duration_value ?? (typeof horizonSecs === 'number' ? horizonSecs : targetRow.horizon_ticks);
     const durUnit = targetRow.duration_unit || 't';
 
-    // Demote any existing production models for the same asset & duration/horizon to respect unique index
+    const targetFamily = targetRow.model_family;
+    const targetFramework = targetRow.framework || modelFrameworkOrFamily;
+
+    // Demote any existing production models for the same asset, duration/horizon, and model family/framework to respect multi-model ensemble coexistence
     if (durVal !== null && durVal !== undefined) {
       await sql`
         UPDATE ml_model_registry_v2
@@ -562,6 +565,10 @@ export async function promoteModelInRegistry(modelId: string, symbol: string, ho
           )
           AND status = 'production'
           AND model_id <> ${modelId}
+          AND (
+            (${targetFramework}::varchar IS NOT NULL AND framework = ${targetFramework})
+            OR (${targetFamily}::varchar IS NOT NULL AND model_family = ${targetFamily})
+          )
       `;
     } else {
       await sql`
@@ -570,6 +577,10 @@ export async function promoteModelInRegistry(modelId: string, symbol: string, ho
         WHERE asset_symbol = ${assetSym}
           AND status = 'production'
           AND model_id <> ${modelId}
+          AND (
+            (${targetFramework}::varchar IS NOT NULL AND framework = ${targetFramework})
+            OR (${targetFamily}::varchar IS NOT NULL AND model_family = ${targetFamily})
+          )
       `;
     }
 

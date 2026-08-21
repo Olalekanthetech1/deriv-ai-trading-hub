@@ -373,6 +373,22 @@ export class TelegramBotController {
     }
 
     // Editing an existing message (e.g. callback query)
+    const captionScreens = new Set([
+      'ai_analyzing',
+      'asset_select',
+      'trade_mode_select',
+      'trade_progress',
+      'trade_profit',
+      'trade_lost',
+      'manual_stake',
+      'trade_error',
+      'trade_execution_error',
+      'insufficient_balance',
+      'signal_bullish',
+      'signal_bearish',
+      'signal_error',
+    ]);
+
     if (canSendAsPhoto && imageUrl) {
       try {
         return await this.sendApi('editMessageMedia', {
@@ -390,9 +406,39 @@ export class TelegramBotController {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.warn(`[sendOrEditScreen editMessageMedia fallback on screen ${screenKey}]:`, errMsg);
 
-        // Controlled fallback: Previous message was text-only or media mismatch occurred.
-        // Delete previous message and send fresh photo message with reply markup.
-        const deleted = await this.safeSendApi('deleteMessage', { chat_id: chatId, message_id: messageId });
+        // If entity parsing failed, try editMessageCaption or editMessageMedia with plain text first
+        if (errMsg.includes('parse') || errMsg.includes('entity')) {
+          const plainCaption = await this.safeSendApi('editMessageCaption', {
+            chat_id: chatId,
+            message_id: messageId,
+            caption: text.replace(/[*_`\[\]()~>#+=|{}.!-]/g, ''),
+            ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+          });
+          if (plainCaption) return plainCaption;
+        }
+
+        // Controlled fallback: Try editMessageCaption directly if already on photo
+        const captionEdited = await this.safeSendApi('editMessageCaption', {
+          chat_id: chatId,
+          message_id: messageId,
+          caption: text,
+          parse_mode: parseMode,
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        });
+        if (captionEdited) return captionEdited;
+
+        // Fall back to editMessageText on the existing message
+        const textEdited = await this.safeSendApi('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text,
+          parse_mode: parseMode,
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        });
+        if (textEdited) return textEdited;
+
+        // Controlled fallback: Only delete and recreate if editing failed completely
+        await this.safeSendApi('deleteMessage', { chat_id: chatId, message_id: messageId });
         const photoSent = await this.safeSendApi('sendPhoto', {
           chat_id: chatId,
           photo: imageUrl,
@@ -403,40 +449,14 @@ export class TelegramBotController {
 
         if (photoSent) return photoSent;
 
-        // If photo send failed (e.g. URL unreachable), fall back to text message
-        if (!deleted) {
-          return await this.safeSendApi('editMessageText', {
-            chat_id: chatId,
-            message_id: messageId,
-            text,
-            parse_mode: parseMode,
-            ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-          });
-        } else {
-          return await this.safeSendApi('sendMessage', {
-            chat_id: chatId,
-            text,
-            parse_mode: parseMode,
-            ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-          });
-        }
+        return await this.safeSendApi('sendMessage', {
+          chat_id: chatId,
+          text,
+          parse_mode: parseMode,
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        });
       }
     }
-
-    // Text-only screen or text length > 1024
-    const captionScreens = new Set([
-      'ai_analyzing',
-      'trade_progress',
-      'trade_profit',
-      'trade_lost',
-      'manual_stake',
-      'trade_error',
-      'trade_execution_error',
-      'insufficient_balance',
-      'signal_bullish',
-      'signal_bearish',
-      'signal_error',
-    ]);
 
     if (captionScreens.has(screenKey) && text.length <= 1024) {
       const captionRes = await this.safeSendApi('editMessageCaption', {
@@ -943,12 +963,13 @@ export class TelegramBotController {
 
     rankingSnapshot.rankings.forEach((res, index) => {
       const medal = index === 0 ? '🏆' : '✅';
-      const cleanName = getSymbolDisplayName(res.symbol, res.name);
+      const displayName = getSymbolDisplayName(res.symbol, res.name);
+      const cleanName = escapeMarkdown(displayName);
       leaderboardLines += `${medal} *${cleanName}*: Win rate = *${res.winRate}%*\n`;
       const btnIcon = index === 0 ? '🏆' : '📈';
       keyboardButtons.push([
         {
-          text: `${btnIcon} ${cleanName}`,
+          text: `${btnIcon} ${displayName}`,
           callback_data: `asset_${res.symbol}`,
         },
       ]);
@@ -957,10 +978,11 @@ export class TelegramBotController {
     keyboardButtons.push([{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]);
 
     const dataAgeSec = (rankingSnapshot.dataAgeMs / 1000).toFixed(1);
+    const escapedVersion = escapeMarkdown(rankingSnapshot.modelVersion || 'v2-production');
     const finalMessageText =
       `📊 *CHOOSE TRADING ASSET*\n` +
       `_Select your preferred market asset_\n\n` +
-      `🏆 *Bot Prediction:* _(Freshness: ${dataAgeSec}s, \`${rankingSnapshot.modelVersion || 'v2-production'}\`)_\n` +
+      `🏆 *Bot Prediction:* _(Freshness: ${dataAgeSec}s, \`${escapedVersion}\`)_\n` +
       `Highest chance to win right now:\n` +
       `${leaderboardLines}\n` +
       `📌 *Make your choice below*`;

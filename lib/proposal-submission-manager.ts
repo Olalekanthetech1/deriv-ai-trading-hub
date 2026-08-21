@@ -38,11 +38,12 @@ export class ProposalSubmissionManager {
     const existing = this.pending.get(key);
     if (existing) return existing;
 
+    const cleanAmount = Number(Number(params.amount).toFixed(2));
     const request = (async () => {
       try {
         const response = await this.ws.send<ProposalResponse>({
           proposal: 1,
-          amount: params.amount,
+          amount: cleanAmount,
           basis: params.basis,
           contract_type: params.contractType,
           currency: params.currency,
