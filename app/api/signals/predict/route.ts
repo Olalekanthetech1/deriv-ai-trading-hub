@@ -143,6 +143,19 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => { throw new Error('REQUEST_BODY_INVALID'); });
     const symbol = typeof body?.symbol === 'string' && body.symbol.trim() ? body.symbol.trim().toUpperCase() : (() => { throw new Error('SYMBOL_REQUIRED'); })();
     const requestedHorizon = normalizeDuration(body?.durationValue, body?.durationUnit);
+    const rawAllowed = Array.isArray(body?.allowedHorizons) ? body.allowedHorizons : undefined;
+    const allowedHorizons = rawAllowed
+      ? (rawAllowed
+          .map((h: any) => {
+            try {
+              const norm = normalizeDuration(h?.value, h?.unit);
+              return { value: norm.value, unit: norm.unit as DurationSelectUnit };
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean) as Array<{ value: number; unit: DurationSelectUnit }>)
+      : undefined;
     const modeValue = String(body?.mode || '').trim();
     const mode: HorizonDecisionMode = modeValue === 'auto' ? 'auto' : modeValue === 'ai_assist' ? 'ai_assist' : modeValue === 'manual' ? 'manual' : (() => { throw new Error('ANALYSIS_MODE_REQUIRED'); })();
 
@@ -177,10 +190,14 @@ export async function POST(req: NextRequest) {
       ? requestedHorizon
       : (() => {
           const autoMode = body?.autoHorizonMode as DurationSelectUnit | 'auto' | undefined;
-          const filtered = (autoMode && autoMode !== 'auto')
-            ? eligibleHorizons.filter((h) => h.unit === autoMode)
+          const allowedFiltered = (allowedHorizons && allowedHorizons.length)
+            ? eligibleHorizons.filter((h) => allowedHorizons.some((a) => sameHorizon(h, normalizeDuration(a.value, a.unit))))
             : eligibleHorizons;
-          const chosen = filtered[0] || eligibleHorizons[0];
+          const candidateSet = allowedFiltered.length ? allowedFiltered : eligibleHorizons;
+          const filtered = (autoMode && autoMode !== 'auto')
+            ? candidateSet.filter((h) => h.unit === autoMode)
+            : candidateSet;
+          const chosen = filtered[0] || candidateSet[0] || eligibleHorizons[0];
           return normalizeDuration(chosen.value, chosen.unit);
         })();
 
@@ -189,6 +206,7 @@ export async function POST(req: NextRequest) {
       symbol,
       mode,
       categoryFilter: body?.autoHorizonMode as DurationSelectUnit | 'auto' | undefined,
+      allowedHorizons,
       requestedDuration: { value: requestedHorizon.value, unit: requestedHorizon.unit },
       primaryEnsemble: selectionEnsemble,
       durationOptions,
@@ -203,6 +221,7 @@ export async function POST(req: NextRequest) {
       symbol,
       mode,
       categoryFilter: selectedHorizon.unit,
+      allowedHorizons,
       requestedDuration: { value: selectedHorizon.value, unit: selectedHorizon.unit },
       primaryEnsemble: predictionEnsemble,
       durationOptions,

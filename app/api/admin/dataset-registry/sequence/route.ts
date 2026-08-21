@@ -19,13 +19,17 @@ function noStore() {
   return { 'Cache-Control': 'no-store, max-age=0' };
 }
 
+const registeredModelKeys = new Set(
+  getMlModelDefinitions().map((definition) => definition.key),
+);
+
 const sequenceModelKeys = new Set(
-  getMlModelDefinitions().filter((definition) => definition.family === 'sequential' && definition.predictive).map((definition) => definition.key),
+  getMlModelDefinitions().filter((definition) => definition.family === 'sequential').map((definition) => definition.key),
 );
 
 function normalizeModelTypes(value: unknown): MlModelKey[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is MlModelKey => typeof item === 'string' && sequenceModelKeys.has(item as MlModelKey));
+  return value.filter((item): item is MlModelKey => typeof item === 'string' && registeredModelKeys.has(item as MlModelKey));
 }
 
 export async function GET(req: NextRequest) {
@@ -106,7 +110,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'datasetId, horizonKey, and sourceType are required.' }, { status: 400, headers: noStore() });
     }
     if (Array.isArray(body?.modelTypes) && requestedModels.length !== body.modelTypes.length) {
-      return NextResponse.json({ success: false, error: 'Only registered predictive sequential models may be queued through this endpoint.' }, { status: 400, headers: noStore() });
+      return NextResponse.json({ success: false, error: 'Only registered ML models may be queued through this endpoint.' }, { status: 400, headers: noStore() });
     }
 
     const datasetRef = parseSequenceTrainingDatasetRef({

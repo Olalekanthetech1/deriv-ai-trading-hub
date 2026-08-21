@@ -17,6 +17,15 @@ export type SequencePartition = {
   schemaFingerprint: string;
 };
 
+export type TabularPartition = {
+  featureVectors: number[][];
+  labels: number[];
+  sampleCount: number;
+  featureCount: number;
+  schemaVersion: string;
+  schemaFingerprint: string;
+};
+
 export type UnifiedSequenceDataset = {
   sourceDatasetId: string;
   horizonKey: string;
@@ -31,6 +40,9 @@ export type UnifiedSequenceDataset = {
   train: SequencePartition;
   validation: SequencePartition;
   test: SequencePartition;
+  tabularTrain: TabularPartition;
+  tabularValidation: TabularPartition;
+  tabularTest: TabularPartition;
   trainSamples: number;
   validationSamples: number;
   testSamples: number;
@@ -87,6 +99,43 @@ function buildPartitions(rows: any[], sequenceLength: number, schema: any): Reco
       labels,
       featureCount: schema.featureCount,
       sequenceLength,
+      schemaVersion: schema.featureSchemaVersion,
+      schemaFingerprint: schema.schemaFingerprint,
+    };
+  }
+
+  return result;
+}
+
+function buildTabularPartitions(rows: any[], schema: any): Record<'train' | 'validation' | 'test', TabularPartition> {
+  const result = {} as Record<'train' | 'validation' | 'test', TabularPartition>;
+
+  for (const split of ['train', 'validation', 'test'] as const) {
+    const ordered = rows
+      .filter((row) => String(row.split) === split)
+      .sort((a, b) => Number(a.sample_index) - Number(b.sample_index));
+
+    const featureVectors: number[][] = [];
+    const labels: number[] = [];
+
+    for (const row of ordered) {
+      const vector = Array.isArray(row.feature_vector) ? row.feature_vector.map(Number) : null;
+      if (!vector || vector.length !== schema.featureCount || vector.some((value: number) => !Number.isFinite(value))) {
+        continue;
+      }
+
+      const label = String(row.label).toUpperCase();
+      if (label !== 'RISE' && label !== 'FALL') continue;
+
+      featureVectors.push(vector);
+      labels.push(label === 'RISE' ? 1 : 0);
+    }
+
+    result[split] = {
+      featureVectors,
+      labels,
+      sampleCount: featureVectors.length,
+      featureCount: schema.featureCount,
       schemaVersion: schema.featureSchemaVersion,
       schemaFingerprint: schema.schemaFingerprint,
     };
@@ -168,6 +217,7 @@ export async function loadUnifiedSequenceDataset(
   });
 
   const partitions = buildPartitions(normalizedRows, schema.sequenceLength, schema);
+  const tabularPartitions = buildTabularPartitions(normalizedRows, schema);
   if (partitions.train.featureSequences.length < 2) {
     throw new Error(
       `UNIFIED_SEQUENCE_TRAIN_SPLIT_INSUFFICIENT: train split produced ${partitions.train.featureSequences.length} sequence windows of length ${schema.sequenceLength} (requires >= 2 contiguous windows)`,
@@ -199,6 +249,9 @@ export async function loadUnifiedSequenceDataset(
     train: partitions.train,
     validation: partitions.validation,
     test: partitions.test,
+    tabularTrain: tabularPartitions.train,
+    tabularValidation: tabularPartitions.validation,
+    tabularTest: tabularPartitions.test,
     trainSamples: partitions.train.featureSequences.length,
     validationSamples: partitions.validation.featureSequences.length,
     testSamples: partitions.test.featureSequences.length,

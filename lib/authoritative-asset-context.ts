@@ -25,18 +25,30 @@ export async function resolveAuthoritativeAssetContext(symbol: string): Promise<
   const market = String(metadata.market || '').trim().toLowerCase();
   const submarket = String(metadata.submarket || '').trim().toLowerCase();
 
-  if (market === 'synthetic_index' || submarket.includes('step') || submarket.includes('random') || submarket.includes('crash') || canonical.startsWith('stp')) {
-    return { symbol: metadata.symbol, assetCategory: 0, assetClass: 'synthetic', marketType: 'synthetic', metadata };
+  switch (market) {
+    case 'synthetic_index':
+      return { symbol: metadata.symbol, assetCategory: 0, assetClass: 'synthetic', marketType: 'synthetic', metadata };
+    case 'forex':
+      return { symbol: metadata.symbol, assetCategory: 1, assetClass: 'forex', marketType: 'spot', metadata };
+    case 'commodity':
+    case 'commodities':
+      return { symbol: metadata.symbol, assetCategory: 2, assetClass: 'commodity', marketType: 'cfd', metadata };
+    case 'cryptocurrency':
+    case 'crypto':
+      return { symbol: metadata.symbol, assetCategory: 3, assetClass: 'crypto', marketType: 'spot', metadata };
+    default:
+      if (submarket.includes('step') || submarket.includes('random') || submarket.includes('crash') || canonical.startsWith('stp')) {
+        return { symbol: metadata.symbol, assetCategory: 0, assetClass: 'synthetic', marketType: 'synthetic', metadata };
+      }
+      if (canonical.startsWith('frx') && !/(XAU|XAG|XPD|XPT|BRO)/i.test(canonical)) {
+        return { symbol: metadata.symbol, assetCategory: 1, assetClass: 'forex', marketType: 'spot', metadata };
+      }
+      if (/(XAU|XAG|XPD|XPT|BRO)/i.test(canonical)) {
+        return { symbol: metadata.symbol, assetCategory: 2, assetClass: 'commodity', marketType: 'cfd', metadata };
+      }
+      if (canonical.startsWith('cry')) {
+        return { symbol: metadata.symbol, assetCategory: 3, assetClass: 'crypto', marketType: 'spot', metadata };
+      }
+      throw new Error(`AUTHORITATIVE_ASSET_CONTEXT_UNAVAILABLE:${canonical}:${market || 'UNKNOWN_MARKET'}`);
   }
-  if (market === 'forex' || (canonical.startsWith('frx') && !/(XAU|XAG|XPD|XPT|BRO)/i.test(canonical))) {
-    return { symbol: metadata.symbol, assetCategory: 1, assetClass: 'forex', marketType: 'spot', metadata };
-  }
-  if (market === 'commodity' || market === 'commodities' || /(XAU|XAG|XPD|XPT|BRO)/i.test(canonical)) {
-    return { symbol: metadata.symbol, assetCategory: 2, assetClass: 'commodity', marketType: 'cfd', metadata };
-  }
-  if (market === 'cryptocurrency' || market === 'crypto' || canonical.startsWith('cry')) {
-    return { symbol: metadata.symbol, assetCategory: 3, assetClass: 'crypto', marketType: 'spot', metadata };
-  }
-
-  throw new Error(`AUTHORITATIVE_ASSET_CONTEXT_UNAVAILABLE:${canonical}:${market || 'UNKNOWN_MARKET'}`);
 }

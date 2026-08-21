@@ -266,8 +266,9 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
       if (runsData?.success) {
         if (Array.isArray(runsData?.runs)) setRecentRuns(runsData.runs);
         if (Array.isArray(runsData?.modelTypes)) {
-          const validTypes = (runsData.modelTypes as string[]).filter((m): m is MlModelKey =>
-            CANONICAL_DEEP_SPECIALIZED_MODELS.includes(m as MlModelKey),
+          const apiTypes = new Set(runsData.modelTypes as string[]);
+          const validTypes = CANONICAL_DEEP_SPECIALIZED_MODELS.filter((m) =>
+            apiTypes.has(m) || m === 'transformer',
           );
           const fleet = validTypes.length ? validTypes : CANONICAL_DEEP_SPECIALIZED_MODELS;
           setAvailableModelTypes(fleet);
@@ -357,21 +358,6 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
         setBatchProgress({ current: i + 1, total: selectedDatasetIds.length });
 
         if (dataset.source_type === 'unified_multi_horizon') {
-          const sequenceModels = selectedModelTypes.filter((model) => model === 'tcn' || model === 'lstm' || model === 'transformer');
-          if (sequenceModels.length === 0) {
-            allErrors.push(
-              `${dataset.asset_symbol} @ ${dataset.duration_value}${dataset.duration_unit}: No sequential models selected. Unified Multi-Horizon datasets train on sequential architectures (LSTM / TCN / Transformer).`,
-            );
-            continue;
-          }
-
-          const nonSequenceModels = selectedModelTypes.filter((model) => model !== 'tcn' && model !== 'lstm' && model !== 'transformer');
-          if (nonSequenceModels.length > 0) {
-            allSkipped.push(
-              `${dataset.asset_symbol} @ ${dataset.duration_value}${dataset.duration_unit}: ${nonSequenceModels.join(', ')} (non-sequential models skipped; queued ${sequenceModels.join(', ').toUpperCase()})`,
-            );
-          }
-
           const res = await adminFetch('/api/admin/dataset-registry/sequence', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -379,14 +365,14 @@ export function StandardMultiModelTrainingPanel({ initialDatasetId }: { initialD
               datasetId: dataset.source_dataset_id,
               horizonKey: dataset.horizon_key,
               sourceType: 'unified',
-              modelTypes: sequenceModels,
+              modelTypes: selectedModelTypes,
               autoPromote,
             }),
           });
           const data = await safeParseJson(res, '/api/admin/dataset-registry/sequence');
           if (!res.ok || !data?.success) {
             allErrors.push(
-              `${dataset.asset_symbol} @ ${dataset.duration_value}${dataset.duration_unit}: ${data?.error || 'Sequence training was rejected.'}`,
+              `${dataset.asset_symbol} @ ${dataset.duration_value}${dataset.duration_unit}: ${data?.error || 'Training was rejected.'}`,
             );
             continue;
           }

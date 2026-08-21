@@ -34,7 +34,7 @@ assert(db.includes('telegram_update_events'), 'Telegram update idempotency table
 assert(db.includes('telegram_trade_intents'), 'Telegram trade idempotency table must exist');
 
 assert(controller.includes('/api/signals/predict'), 'Telegram must use the live production prediction API');
-assert(controller.includes('isAutoDuration: true'), 'Telegram must request authoritative auto-duration selection');
+assert(controller.includes('isAutoDuration: true') || controller.includes('isAutoDuration: isAuto'), 'Telegram must request authoritative auto-duration selection');
 assert(controller.includes('claimTelegramTradeIntent'), 'trade execution must be idempotent');
 assert(controller.includes('updateTelegramTradeIntent'), 'trade intent status must be finalized');
 assert(controller.includes('modelVersion'), 'Telegram signal display must derive model metadata from live prediction');

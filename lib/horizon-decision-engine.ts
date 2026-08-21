@@ -43,16 +43,41 @@ function candidateFromOption(option: DurationOption, value: number): CandidateHo
   return { value, unit: option.unit, seconds, label: `${value} ${name}${value === 1 ? '' : 's'}`, key: `${value}${option.unit}` };
 }
 
-function getLiveCandidateHorizons(durationOptions: DurationOption[], horizonMap: Record<string, unknown>): CandidateHorizon[] {
+function matchesAllowedHorizons(
+  cand: CandidateHorizon,
+  allowedHorizons?: ReadonlyArray<{ value: number; unit: DurationSelectUnit }>
+): boolean {
+  if (!allowedHorizons || !allowedHorizons.length) return true;
+  return allowedHorizons.some((a) => {
+    if (a.unit === cand.unit && a.value === cand.value) return true;
+    if (a.unit !== 't' && a.unit !== 'end-time' && cand.unit !== 't') {
+      const aSec = a.unit === 's' ? a.value : Number(durationToSeconds(a.value, a.unit));
+      if (aSec === cand.seconds) return true;
+    }
+    return false;
+  });
+}
+
+function getLiveCandidateHorizons(
+  durationOptions: DurationOption[],
+  horizonMap: Record<string, unknown>,
+  allowedHorizons?: ReadonlyArray<{ value: number; unit: DurationSelectUnit }>,
+  categoryFilter?: DurationSelectUnit | 'auto'
+): CandidateHorizon[] {
   const result = new Map<string, CandidateHorizon>();
+  const activeCategory = categoryFilter && categoryFilter !== 'auto' ? categoryFilter : undefined;
   if (durationOptions && durationOptions.length) {
     for (const option of durationOptions) {
       if (option.unit === 'end-time') continue;
+      if (activeCategory && option.unit !== activeCategory) continue;
       for (const key of Object.keys(horizonMap)) {
         if (!key.endsWith(option.unit)) continue;
         const value = Number(key.slice(0, -option.unit.length));
         if (!Number.isFinite(value) || value < option.min || value > option.max) continue;
-        result.set(key, candidateFromOption(option, value));
+        const cand = candidateFromOption(option, value);
+        if (matchesAllowedHorizons(cand, allowedHorizons)) {
+          result.set(key, cand);
+        }
       }
     }
   }
@@ -62,15 +87,27 @@ function getLiveCandidateHorizons(durationOptions: DurationOption[], horizonMap:
       if (match) {
         const val = Number(match[1]);
         const unit = match[2].toLowerCase() as 't' | 's' | 'm' | 'h' | 'd';
+        if (activeCategory && unit !== activeCategory) continue;
         if (Number.isFinite(val) && val > 0) {
           const seconds = unit === 't' ? val : Number(durationToSeconds(val, unit));
           const name = unit === 't' ? 'Tick' : unit === 's' ? 'Second' : unit === 'm' ? 'Minute' : unit === 'h' ? 'Hour' : 'Day';
-          result.set(key, { value: val, unit, seconds, label: `${val} ${name}${val === 1 ? '' : 's'}`, key });
+          const cand: CandidateHorizon = { value: val, unit, seconds, label: `${val} ${name}${val === 1 ? '' : 's'}`, key };
+          if (matchesAllowedHorizons(cand, allowedHorizons)) {
+            result.set(key, cand);
+          }
         }
       }
     }
   }
-  if (!result.size) throw new Error('AUTHORITATIVE_HORIZON_OPTIONS_UNAVAILABLE');
+  if (!result.size && activeCategory) {
+    return getLiveCandidateHorizons(durationOptions, horizonMap, allowedHorizons, 'auto');
+  }
+  if (!result.size) {
+    if (allowedHorizons && allowedHorizons.length) {
+      throw new Error(`AUTHORITATIVE_ALLOWED_HORIZONS_UNAVAILABLE:${allowedHorizons.map((h) => `${h.value}${h.unit}`).join(',')}`);
+    }
+    throw new Error('AUTHORITATIVE_HORIZON_OPTIONS_UNAVAILABLE');
+  }
   return [...result.values()];
 }
 
@@ -129,8 +166,18 @@ function resolveDriftPenalty(primaryEnsemble: ProductionEnsembleResult, availabl
   return breached.length / availableModelCount;
 }
 
-export function evaluateHorizonDecisionSnapshot(params: { symbol: string; mode: HorizonDecisionMode; categoryFilter?: DurationSelectUnit | 'auto'; requestedDuration?: { value: number; unit: DurationSelectUnit }; primaryEnsemble: ProductionEnsembleResult; durationOptions?: DurationOption[]; prices?: number[]; enforceRequestedDuration?: boolean; }): HorizonDecisionSnapshot {
-  const { symbol, mode, categoryFilter, requestedDuration, primaryEnsemble, durationOptions, prices, enforceRequestedDuration } = params;
+export function evaluateHorizonDecisionSnapshot(params: {
+  symbol: string;
+  mode: HorizonDecisionMode;
+  categoryFilter?: DurationSelectUnit | 'auto';
+  allowedHorizons?: ReadonlyArray<{ value: number; unit: DurationSelectUnit }>;
+  requestedDuration?: { value: number; unit: DurationSelectUnit };
+  primaryEnsemble: ProductionEnsembleResult;
+  durationOptions?: DurationOption[];
+  prices?: number[];
+  enforceRequestedDuration?: boolean;
+}): HorizonDecisionSnapshot {
+  const { symbol, mode, categoryFilter, allowedHorizons, requestedDuration, primaryEnsemble, durationOptions, prices, enforceRequestedDuration } = params;
   if (!symbol) throw new Error('SYMBOL_REQUIRED');
   const quality = verifyDataQuality(prices || []);
   const breakdown = primaryEnsemble.modelBreakdown as Record<string, any>;
@@ -146,12 +193,17 @@ export function evaluateHorizonDecisionSnapshot(params: { symbol: string; mode: 
 
   if (!breakdown?.horizons || typeof breakdown.horizons !== 'object') throw new Error('AUTHORITATIVE_HORIZON_ANALYSIS_UNAVAILABLE');
 
-  const candidates = getLiveCandidateHorizons(durationOptions || [], breakdown.horizons as Record<string, unknown>);
+  const candidates = getLiveCandidateHorizons(durationOptions || [], breakdown.horizons as Record<string, unknown>, allowedHorizons, categoryFilter);
   let chosen: CandidateHorizon;
   if (mode === 'manual' || enforceRequestedDuration) {
     if (!requestedDuration) throw new Error('REQUESTED_HORIZON_REQUIRED');
     const key = `${requestedDuration.value}${requestedDuration.unit}`;
-    chosen = candidates.find((item) => item.key === key) || (() => { throw new Error('REQUESTED_HORIZON_NOT_IN_LIVE_ANALYSIS'); })();
+    chosen = candidates.find((item) => item.key === key) || (() => {
+      const allCandidates = getLiveCandidateHorizons(durationOptions || [], breakdown.horizons as Record<string, unknown>, allowedHorizons, 'auto');
+      const found = allCandidates.find((item) => item.key === key);
+      if (found) return found;
+      throw new Error('REQUESTED_HORIZON_NOT_IN_LIVE_ANALYSIS');
+    })();
   } else {
     const ranked = candidates.map((candidate) => ({ candidate, analysis: breakdown.horizons[candidate.key] as HorizonAnalysisRecord | undefined })).filter((entry) => entry.analysis);
     if (!ranked.length) throw new Error('AUTHORITATIVE_HORIZON_RANKING_UNAVAILABLE');

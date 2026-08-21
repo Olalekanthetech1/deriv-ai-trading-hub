@@ -1,6 +1,7 @@
 import { getDb, initDbSchema } from './db';
 import { getLiveRiseFallSymbols } from './rise-fall-symbols';
 import { fetchDerivTickHistory } from './ticks-helper';
+import { TELEGRAM_SUPPORTED_HORIZONS } from './duration-utils';
 
 export interface RankedAssetItem {
   symbol: string;
@@ -160,6 +161,7 @@ export async function refreshLiveMarketRankings(
               isAutoDuration: true,
               mode: 'auto',
               autoHorizonMode: 'auto',
+              allowedHorizons: TELEGRAM_SUPPORTED_HORIZONS,
             }),
           });
 

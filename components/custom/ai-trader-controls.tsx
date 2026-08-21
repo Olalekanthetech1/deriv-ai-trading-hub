@@ -207,7 +207,7 @@ export function AiTraderControls({
           autoHorizonMode: currentAutoMode,
           durationOptions: currentOptions,
           isAutoDuration: currentIsAuto,
-          mode: currentIsAuto ? 'auto' : currentAutoMode !== 'auto' ? 'ai_assist' : 'manual',
+          mode: currentIsAuto ? (currentAutoMode !== 'auto' ? 'ai_assist' : 'auto') : 'manual',
         }),
       });
 

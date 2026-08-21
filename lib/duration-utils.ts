@@ -173,3 +173,12 @@ export function getCloseTimeForDate(data: TradingSymbolData, date: Date): string
 // Horizon selection is server-authoritative. The client may select the requested
 // mode, but it must never calculate an optimal horizon locally.
 export type AutoHorizonMode = 'auto' | 't' | 's' | 'm' | 'h' | 'd';
+
+export const TELEGRAM_SUPPORTED_HORIZONS: ReadonlyArray<{ value: number; unit: DurationSelectUnit }> = [
+  { value: 5, unit: 't' },
+  { value: 10, unit: 't' },
+  { value: 15, unit: 's' },
+  { value: 30, unit: 's' },
+  { value: 60, unit: 's' },
+] as const;
+

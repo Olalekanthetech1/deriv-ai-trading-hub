@@ -116,7 +116,7 @@ export function useRealtimeSignals(
             durationUnit,
             autoHorizonMode,
             isAutoDuration,
-            mode: isAutoDuration ? 'auto' : autoHorizonMode && autoHorizonMode !== 'auto' ? 'ai_assist' : 'manual',
+            mode: isAutoDuration ? (autoHorizonMode && autoHorizonMode !== 'auto' ? 'ai_assist' : 'auto') : 'manual',
           }),
         });
         const data = (await res.json().catch(() => ({}))) as SignalApiResponse;

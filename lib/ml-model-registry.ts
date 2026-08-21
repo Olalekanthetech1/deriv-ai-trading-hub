@@ -28,7 +28,7 @@ export const ML_MODEL_DEFINITIONS = [
   { key: 'catboost', displayName: 'CatBoost', family: 'tabular', predictive: true, lifecycleTier: 'production_candidate', defaultEnabled: true, defaultHyperparameters: { numEstimators: 100, maxDepth: 6, learningRate: 0.05, randomState: 42 } },
   { key: 'tcn', displayName: 'TCN', family: 'sequential', predictive: true, lifecycleTier: 'production_candidate', defaultEnabled: true, defaultHyperparameters: { epochs: 8, batchSize: 64, learningRate: 0.001 } },
   { key: 'lstm', displayName: 'LSTM / GRU', family: 'sequential', predictive: true, lifecycleTier: 'production_candidate', defaultEnabled: true, defaultHyperparameters: { epochs: 8, batchSize: 64, learningRate: 0.001 } },
-  { key: 'transformer', displayName: 'Transformer', family: 'sequential', predictive: true, lifecycleTier: 'experimental', defaultEnabled: false, defaultHyperparameters: { epochs: 8, batchSize: 64, learningRate: 0.001 } },
+  { key: 'transformer', displayName: 'Transformer', family: 'sequential', predictive: true, lifecycleTier: 'production_candidate', defaultEnabled: true, defaultHyperparameters: { epochs: 8, batchSize: 64, learningRate: 0.001 } },
   { key: 'hmm', displayName: 'HMM Regime Model', family: 'regime', predictive: false, lifecycleTier: 'production_candidate', defaultEnabled: true, defaultHyperparameters: { components: 4, iterations: 100, randomState: 42 } },
   { key: 'isolation_forest', displayName: 'Isolation Forest', family: 'anomaly', predictive: false, lifecycleTier: 'production_candidate', defaultEnabled: true, defaultHyperparameters: { numEstimators: 200, randomState: 42, nJobs: 2 } },
 ] as const satisfies readonly MlModelDefinition[];
@@ -46,7 +46,7 @@ export function getAllMlModelKeys(): MlModelKey[] {
 }
 
 export function getExperimentalModelDefinitions(): readonly MlModelDefinition[] {
-  return ML_MODEL_DEFINITIONS.filter(({ lifecycleTier }) => lifecycleTier === 'experimental');
+  return ML_MODEL_DEFINITIONS.filter(({ lifecycleTier }) => (lifecycleTier as string) === 'experimental');
 }
 
 export function getExperimentalModelKeys(): MlModelKey[] {

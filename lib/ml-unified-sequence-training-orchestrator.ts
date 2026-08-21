@@ -24,11 +24,11 @@ function workerId(): string {
 
 function selectedSequenceDefinitions(modelTypes?: string[]) {
   const requested = new Set((modelTypes || []).map((value) => String(value).trim()));
-  const definitions = getMlModelDefinitions().filter((definition) => definition.family === 'sequential' && definition.predictive);
+  const definitions = getMlModelDefinitions();
   const selected = requested.size
     ? definitions.filter((definition) => requested.has(definition.key))
     : definitions.filter((definition) => definition.defaultEnabled && definition.lifecycleTier === 'production_candidate');
-  if (!selected.length) throw new Error('NO_REGISTERED_SEQUENCE_MODELS_SELECTED');
+  if (!selected.length) throw new Error('NO_REGISTERED_MODELS_SELECTED');
   return selected;
 }
 
@@ -100,9 +100,10 @@ export async function trainUnifiedSequenceModels(request: UnifiedSequenceTrainin
     for (const definition of definitions) {
       await sql`UPDATE ml_training_run_models SET status='running'::varchar,started_at=NOW(),heartbeat_at=NOW() WHERE run_id=${runId}::uuid AND model_type=${definition.key}::varchar`;
       try {
+        const isSequential = definition.family === 'sequential';
         const hyperparameters: Record<string, number> = {
           ...definition.defaultHyperparameters,
-          sequenceLength: dataset.sequenceLength,
+          ...(isSequential ? { sequenceLength: dataset.sequenceLength } : {}),
           ...(strategy.hyperparameters[definition.key] || {}),
         };
         const result = await mlRuntimeClient.sendCommand('train_partitioned', {
@@ -115,22 +116,29 @@ export async function trainUnifiedSequenceModels(request: UnifiedSequenceTrainin
           datasetId: dataset.sourceDatasetId,
           trainingRunId: runId,
           schemaContract: schema,
-          trainSequenceDataset: dataset.train,
-          validationSequenceDataset: dataset.validation,
+          ...(isSequential
+            ? {
+                trainSequenceDataset: dataset.train,
+                validationSequenceDataset: dataset.validation,
+              }
+            : {
+                trainTabularDataset: dataset.tabularTrain,
+                validationTabularDataset: dataset.tabularValidation,
+              }),
           hyperparams: hyperparameters,
           assetAwareStrategy: {
             key: strategy.key,
             version: strategy.version,
             assetClass: strategy.assetClass,
             marketType: strategy.marketType,
-            sequenceLength: dataset.sequenceLength,
+            sequenceLength: isSequential ? dataset.sequenceLength : undefined,
             minimumSamples: strategy.minimumSamples[definition.key],
           },
           datasetSource: 'unified',
           sourceDatasetId: dataset.sourceDatasetId,
           horizonKey: dataset.horizonKey,
         });
-        if (!result?.success) throw new Error(result?.error || 'Native sequence training failed.');
+        if (!result?.success) throw new Error(result?.error || `Native ${definition.displayName} training failed.`);
         const modelId = String(result.modelId || '').trim();
         const artifactPath = typeof result.artifactPath === 'string' ? result.artifactPath.trim() : '';
         if (!modelId) throw new Error('TRAINED_MODEL_ID_MISSING');
@@ -144,13 +152,30 @@ export async function trainUnifiedSequenceModels(request: UnifiedSequenceTrainin
           datasetSource: 'unified',
           sourceDatasetId: dataset.sourceDatasetId,
           horizonKey: dataset.horizonKey,
-          sequenceLength: dataset.sequenceLength,
+          sequenceLength: isSequential ? dataset.sequenceLength : undefined,
           featureSchemaVersion: dataset.featureSchemaVersion,
           schemaFingerprint: dataset.schemaFingerprint,
           artifactSha256: artifact.sha256,
           artifactByteSize: artifact.byteSize,
           durableArtifactStore: true,
         };
+
+        const framework = isSequential
+          ? 'pytorch'
+          : definition.key === 'xgboost'
+          ? 'xgboost'
+          : definition.key === 'lightgbm'
+          ? 'lightgbm'
+          : definition.key === 'catboost'
+          ? 'catboost'
+          : definition.key === 'hmm'
+          ? 'hmmlearn'
+          : definition.key === 'isolation_forest'
+          ? 'scikit-learn'
+          : 'python';
+
+        const format = isSequential ? 'PT_STATE' : 'JOB_LIB';
+
         await registerDurationModel({
           modelId,
           modelFamily: definition.family,
@@ -162,14 +187,14 @@ export async function trainUnifiedSequenceModels(request: UnifiedSequenceTrainin
           durationSeconds: dataset.durationSeconds,
           effectiveHorizonTicks: dataset.effectiveHorizonTicks,
           datasetId: dataset.sourceDatasetId,
-          format: 'PT_STATE',
+          format,
           status: 'candidate',
           featureSchemaVersion: dataset.featureSchemaVersion,
-          framework: 'pytorch',
+          framework,
           trainingRunId: runId,
           strategyKey: strategy.key,
           strategyVersion: strategy.version,
-          strategyMetadata: { datasetSource: 'unified', sourceDatasetId: dataset.sourceDatasetId, horizonKey: dataset.horizonKey, sequenceLength: dataset.sequenceLength, assetClass, marketType },
+          strategyMetadata: { datasetSource: 'unified', sourceDatasetId: dataset.sourceDatasetId, horizonKey: dataset.horizonKey, sequenceLength: isSequential ? dataset.sequenceLength : null, assetClass, marketType },
           metrics: { ...metrics, artifactPath },
           hyperparameters,
         });

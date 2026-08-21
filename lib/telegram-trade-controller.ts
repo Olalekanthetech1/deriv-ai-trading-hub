@@ -12,6 +12,10 @@ import {
   updateTelegramTradeIntent,
 } from './telegram-db';
 
+import { TELEGRAM_SUPPORTED_HORIZONS } from './duration-utils';
+
+export { TELEGRAM_SUPPORTED_HORIZONS };
+
 const TELEGRAM_API_BASE = 'https://api.telegram.org/bot';
 const VALID_STAKES = new Set([1, 5, 10, 25, 50]);
 
@@ -648,6 +652,9 @@ export class TelegramBotController {
         isAutoDuration: isAuto,
         mode: isAuto ? 'auto' : 'manual',
         autoHorizonMode: 'auto',
+        allowedHorizons: isAuto
+          ? TELEGRAM_SUPPORTED_HORIZONS
+          : [{ value: user.active_duration_value, unit: user.active_duration_unit }],
       }),
     });
 

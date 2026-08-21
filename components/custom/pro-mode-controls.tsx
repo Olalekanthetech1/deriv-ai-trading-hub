@@ -228,7 +228,7 @@ export function ProModeControls({
           autoHorizonMode: autoHorizonModeRef.current,
           durationOptions: durationOptionsRef.current,
           isAutoDuration: currentIsAuto,
-          mode: currentIsAuto ? 'auto' : autoHorizonModeRef.current !== 'auto' ? 'ai_assist' : 'manual',
+          mode: currentIsAuto ? (autoHorizonModeRef.current !== 'auto' ? 'ai_assist' : 'auto') : 'manual',
         }),
       });
 
