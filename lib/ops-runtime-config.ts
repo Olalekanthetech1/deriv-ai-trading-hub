@@ -604,3 +604,187 @@ export async function resumeGlobalTradingWithHealthCheck(params: {
   });
 }
 
+export type TelegramAssetGovernanceConfig = {
+  enabledCategories: {
+    volatility_1s: boolean;
+    volatility_standard: boolean;
+    jump: boolean;
+  };
+  disabledSymbols: string[];
+  enabledSymbols: string[];
+  updatedAt: string | null;
+  updatedBy: string | null;
+  source: 'database' | 'default';
+};
+
+let cachedAssetGovernanceConfig: TelegramAssetGovernanceConfig | null = null;
+let assetGovernanceCacheExpiresAt = 0;
+
+/**
+ * Retrieves dynamic Telegram Asset Whitelist & Category Governance configuration.
+ */
+export async function getTelegramAssetGovernanceConfig(forceRefresh = false): Promise<TelegramAssetGovernanceConfig> {
+  const now = Date.now();
+  if (!forceRefresh && cachedAssetGovernanceConfig && now < assetGovernanceCacheExpiresAt) {
+    return cachedAssetGovernanceConfig;
+  }
+
+  try {
+    await ensureOpsRuntimeConfigTable();
+    const sql = getDbOrThrow();
+    const rows = await sql`
+      SELECT config_value, updated_at, updated_by
+      FROM ops_runtime_config
+      WHERE config_key = 'telegram_asset_whitelist'
+      LIMIT 1
+    `;
+
+    if (rows.length > 0 && rows[0]?.config_value) {
+      const val = rows[0].config_value;
+      const loaded: TelegramAssetGovernanceConfig = {
+        enabledCategories: {
+          volatility_1s: val.enabledCategories?.volatility_1s !== false,
+          volatility_standard: val.enabledCategories?.volatility_standard !== false,
+          jump: val.enabledCategories?.jump !== false,
+        },
+        disabledSymbols: Array.isArray(val.disabledSymbols) ? val.disabledSymbols.map((s: any) => String(s).toUpperCase()) : [],
+        enabledSymbols: Array.isArray(val.enabledSymbols) ? val.enabledSymbols.map((s: any) => String(s).toUpperCase()) : [],
+        updatedAt: rows[0].updated_at ? new Date(rows[0].updated_at).toISOString() : null,
+        updatedBy: rows[0].updated_by ? String(rows[0].updated_by) : null,
+        source: 'database',
+      };
+
+      cachedAssetGovernanceConfig = loaded;
+      assetGovernanceCacheExpiresAt = now + CACHE_TTL_MS;
+      return loaded;
+    }
+  } catch (error) {
+    console.error('[ops-runtime-config] error reading telegram asset governance config from database:', error);
+  }
+
+  const fallback: TelegramAssetGovernanceConfig = {
+    enabledCategories: {
+      volatility_1s: true,
+      volatility_standard: true,
+      jump: true,
+    },
+    disabledSymbols: [],
+    enabledSymbols: [],
+    updatedAt: null,
+    updatedBy: null,
+    source: 'default',
+  };
+
+  cachedAssetGovernanceConfig = fallback;
+  assetGovernanceCacheExpiresAt = now + CACHE_TTL_MS;
+  return fallback;
+}
+
+/**
+ * Updates dynamic Telegram Asset Whitelist & Category Governance configuration.
+ */
+export async function updateTelegramAssetGovernanceConfig(params: {
+  enabledCategories?: Partial<TelegramAssetGovernanceConfig['enabledCategories']>;
+  disabledSymbols?: string[];
+  enabledSymbols?: string[];
+  updatedBy?: string;
+}): Promise<TelegramAssetGovernanceConfig> {
+  await ensureOpsRuntimeConfigTable();
+  const current = await getTelegramAssetGovernanceConfig(true);
+
+  const nextCategories = {
+    volatility_1s: params.enabledCategories?.volatility_1s !== undefined ? params.enabledCategories.volatility_1s : current.enabledCategories.volatility_1s,
+    volatility_standard: params.enabledCategories?.volatility_standard !== undefined ? params.enabledCategories.volatility_standard : current.enabledCategories.volatility_standard,
+    jump: params.enabledCategories?.jump !== undefined ? params.enabledCategories.jump : current.enabledCategories.jump,
+  };
+
+  const nextDisabled = params.disabledSymbols ? params.disabledSymbols.map((s) => String(s).toUpperCase()) : current.disabledSymbols;
+  const nextEnabled = params.enabledSymbols ? params.enabledSymbols.map((s) => String(s).toUpperCase()) : current.enabledSymbols;
+  const updatedBy = params.updatedBy || 'admin';
+
+  const configValue = {
+    enabledCategories: nextCategories,
+    disabledSymbols: nextDisabled,
+    enabledSymbols: nextEnabled,
+  };
+
+  const sql = getDbOrThrow();
+  const rows = await sql`
+    INSERT INTO ops_runtime_config (config_key, config_value, updated_at, updated_by)
+    VALUES ('telegram_asset_whitelist', ${JSON.stringify(configValue)}::jsonb, NOW(), ${updatedBy})
+    ON CONFLICT (config_key) DO UPDATE SET
+      config_value = EXCLUDED.config_value,
+      updated_at = NOW(),
+      updated_by = EXCLUDED.updated_by
+    RETURNING config_value, updated_at, updated_by
+  `;
+
+  try {
+    await sql`
+      INSERT INTO ops_audit_events (
+        category, severity, actor, action, resource_type, resource_id, metadata
+      ) VALUES (
+        'telegram_ops',
+        'info',
+        ${updatedBy},
+        'update_telegram_asset_governance',
+        'ops_runtime_config',
+        'telegram_asset_whitelist',
+        ${JSON.stringify({ previous: current, current: configValue })}::jsonb
+      )
+    `;
+  } catch (auditErr) {
+    console.warn('[ops-runtime-config] audit log entry warning for asset governance:', auditErr);
+  }
+
+  cachedAssetGovernanceConfig = {
+    enabledCategories: nextCategories,
+    disabledSymbols: nextDisabled,
+    enabledSymbols: nextEnabled,
+    updatedAt: rows[0]?.updated_at ? new Date(rows[0].updated_at).toISOString() : new Date().toISOString(),
+    updatedBy: rows[0]?.updated_by ? String(rows[0].updated_by) : updatedBy,
+    source: 'database',
+  };
+  assetGovernanceCacheExpiresAt = Date.now() + CACHE_TTL_MS;
+
+  return cachedAssetGovernanceConfig;
+}
+
+/**
+ * Checks if a symbol is approved for Telegram user trading according to dynamic governance config.
+ */
+export function isSymbolApprovedForTelegram(
+  symbol: string,
+  categoryKeys: string[],
+  config: TelegramAssetGovernanceConfig
+): boolean {
+  const upper = symbol.toUpperCase();
+
+  // 1. Explicit symbol blacklists & overrides
+  if (config.disabledSymbols.includes(upper)) {
+    return false;
+  }
+  if (config.enabledSymbols.includes(upper)) {
+    return true;
+  }
+
+  // 2. Category checks
+  const isVol1s = categoryKeys.includes('volatility_1s') || upper.startsWith('1HZ');
+  const isVolStd = categoryKeys.includes('volatility_standard') || upper.startsWith('R_') || (categoryKeys.includes('volatility') && !isVol1s);
+  const isJump = categoryKeys.includes('jump') || upper.startsWith('JD') || categoryKeys.includes('jump_index');
+
+  if (isVol1s) {
+    return config.enabledCategories.volatility_1s;
+  }
+  if (isVolStd) {
+    return config.enabledCategories.volatility_standard;
+  }
+  if (isJump) {
+    return config.enabledCategories.jump;
+  }
+
+  // Default fallback for synthetic / volatility assets
+  return true;
+}
+
+

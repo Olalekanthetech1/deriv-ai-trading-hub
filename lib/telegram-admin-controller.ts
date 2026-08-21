@@ -2,8 +2,11 @@ import {
   getGlobalTradingCircuitBreakerConfig,
   updateGlobalTradingCircuitBreakerConfig,
   resumeGlobalTradingWithHealthCheck,
+  getTelegramAssetGovernanceConfig,
+  updateTelegramAssetGovernanceConfig,
+  isSymbolApprovedForTelegram,
 } from './ops-runtime-config';
-import { getLiveRiseFallSymbols } from './rise-fall-symbols';
+import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';
 import { getValidMarketRankingSnapshot } from './market-ranking-cache';
 import { getDbConnectionString, initDbSchema } from './db';
 import { neon } from '@neondatabase/serverless';
@@ -130,6 +133,9 @@ export class TelegramAdminController {
       [
         { text: '📊 Refresh Health', callback_data: 'admin_health_status' },
         { text: '🤖 Model Status', callback_data: 'admin_models' },
+      ],
+      [
+        { text: '🌐 Asset Scanner & Whitelist', callback_data: 'admin_asset_tab:all' },
       ],
       [
         { text: '📈 Daily Summary', callback_data: 'admin_summary' },
@@ -403,5 +409,182 @@ export class TelegramAdminController {
       return Number(res.result.message_id);
     }
     return null;
+  }
+
+  async renderAssetScanner(
+    chatId: number,
+    messageId?: number,
+    activeTab: 'all' | 'volatility_1s' | 'volatility_standard' | 'jump' = 'all',
+    bannerNotice?: string
+  ) {
+    const gov = await getTelegramAssetGovernanceConfig(true);
+    let allSymbols: RiseFallSymbolMetadata[] = [];
+    try {
+      allSymbols = await getLiveRiseFallSymbols(true, false);
+    } catch (err) {
+      console.warn('[Telegram Admin Controller] Error discovering symbols for scanner:', err);
+    }
+
+    const targetSymbols = allSymbols.filter((s) => {
+      const keys = s.categoryKeys || [];
+      const sym = s.symbol.toUpperCase();
+      return (
+        keys.includes('volatility') ||
+        keys.includes('volatility_1s') ||
+        keys.includes('volatility_standard') ||
+        keys.includes('jump') ||
+        sym.startsWith('R_') ||
+        sym.startsWith('1HZ') ||
+        sym.startsWith('JD')
+      );
+    });
+
+    const vol1sList = targetSymbols.filter(s => s.categoryKeys.includes('volatility_1s') || s.symbol.toUpperCase().startsWith('1HZ'));
+    const volStdList = targetSymbols.filter(s => s.categoryKeys.includes('volatility_standard') || s.symbol.toUpperCase().startsWith('R_'));
+    const jumpList = targetSymbols.filter(s => s.categoryKeys.includes('jump') || s.symbol.toUpperCase().startsWith('JD'));
+
+    const vol1sApprovedCount = vol1sList.filter(s => isSymbolApprovedForTelegram(s.symbol, s.categoryKeys, gov)).length;
+    const volStdApprovedCount = volStdList.filter(s => isSymbolApprovedForTelegram(s.symbol, s.categoryKeys, gov)).length;
+    const jumpApprovedCount = jumpList.filter(s => isSymbolApprovedForTelegram(s.symbol, s.categoryKeys, gov)).length;
+
+    let displayList = targetSymbols;
+    if (activeTab === 'volatility_1s') displayList = vol1sList;
+    if (activeTab === 'volatility_standard') displayList = volStdList;
+    if (activeTab === 'jump') displayList = jumpList;
+
+    const noticeHeader = bannerNotice ? `\n\n${bannerNotice}\n` : '';
+
+    let itemsText = '';
+    displayList.forEach((item) => {
+      const approved = isSymbolApprovedForTelegram(item.symbol, item.categoryKeys, gov);
+      const icon = item.symbol.toUpperCase().startsWith('JD') ? '🚀' : item.symbol.toUpperCase().startsWith('1HZ') ? '⚡' : '📊';
+      const statusStr = approved ? '🟢 APPROVED' : '🔴 DISABLED';
+      const openStr = item.isOpen ? 'OPEN' : 'CLOSED';
+      itemsText += `• ${icon} *${item.symbol}* (${item.displayName}): ${statusStr} | _${openStr}_\n`;
+    });
+
+    if (!itemsText) itemsText = '_No symbols found in this category._';
+
+    const tabTitle = activeTab === 'all' ? 'ALL ASSETS' : activeTab === 'volatility_1s' ? 'VOLATILITY 1S' : activeTab === 'volatility_standard' ? 'STANDARD VOLATILITY' : 'JUMP INDICES';
+
+    const text =
+      `🌐 *ASSET UNIVERSE & LIVE SCANNER*${noticeHeader}\n\n` +
+      `*Category Controls & Status:*\n` +
+      `• ⚡ *Vol 1s:* ${gov.enabledCategories.volatility_1s ? '🟢 ENABLED' : '🔴 DISABLED'} (${vol1sApprovedCount}/${vol1sList.length} active)\n` +
+      `• 📊 *Vol Standard:* ${gov.enabledCategories.volatility_standard ? '🟢 ENABLED' : '🔴 DISABLED'} (${volStdApprovedCount}/${volStdList.length} active)\n` +
+      `• 🚀 *Jump Indices:* ${gov.enabledCategories.jump ? '🟢 ENABLED' : '🔴 DISABLED'} (${jumpApprovedCount}/${jumpList.length} active)\n\n` +
+      `*View Category: ${tabTitle} (${displayList.length} Symbols)*\n` +
+      `${itemsText}\n\n` +
+      `_Tap category toggles or symbol buttons below to update active whitelist in real-time._`;
+
+    const inlineKeyboard: { text: string; callback_data: string }[][] = [
+      [
+        { text: `${activeTab === 'volatility_1s' ? '▶️ ⚡ Vol 1s' : '⚡ Vol 1s'}`, callback_data: 'admin_asset_tab:volatility_1s' },
+        { text: `${activeTab === 'volatility_standard' ? '▶️ 📊 Standard' : '📊 Standard'}`, callback_data: 'admin_asset_tab:volatility_standard' },
+        { text: `${activeTab === 'jump' ? '▶️ 🚀 Jump' : '🚀 Jump'}`, callback_data: 'admin_asset_tab:jump' },
+        { text: `${activeTab === 'all' ? '▶️ 🌐 All' : '🌐 All'}`, callback_data: 'admin_asset_tab:all' },
+      ],
+      [
+        { text: `${gov.enabledCategories.volatility_1s ? '🔴 Disable Vol 1s' : '🟢 Enable Vol 1s'}`, callback_data: `admin_asset_toggle_cat:volatility_1s:${activeTab}` },
+        { text: `${gov.enabledCategories.volatility_standard ? '🔴 Disable Standard' : '🟢 Enable Standard'}`, callback_data: `admin_asset_toggle_cat:volatility_standard:${activeTab}` },
+      ],
+      [
+        { text: `${gov.enabledCategories.jump ? '🔴 Disable Jump Indices' : '🟢 Enable Jump Indices'}`, callback_data: `admin_asset_toggle_cat:jump:${activeTab}` },
+      ],
+    ];
+
+    const assetToggleRow: { text: string; callback_data: string }[] = [];
+    displayList.slice(0, 9).forEach((item) => {
+      const approved = isSymbolApprovedForTelegram(item.symbol, item.categoryKeys, gov);
+      assetToggleRow.push({
+        text: `${approved ? '🔴' : '🟢'} ${item.symbol}`,
+        callback_data: `admin_asset_toggle_sym:${item.symbol}:${activeTab}`,
+      });
+    });
+
+    for (let i = 0; i < assetToggleRow.length; i += 3) {
+      inlineKeyboard.push(assetToggleRow.slice(i, i + 3));
+    }
+
+    inlineKeyboard.push([
+      { text: '📊 Health Dashboard', callback_data: 'admin_health_status' },
+      { text: '🤖 Model Status', callback_data: 'admin_models' },
+    ]);
+
+    if (messageId) {
+      await this.sendApi('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    } else {
+      await this.sendApi('sendMessage', {
+        chat_id: chatId,
+        text,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    }
+  }
+
+  async handleToggleCategory(
+    chatId: number,
+    messageId: number,
+    category: 'volatility_1s' | 'volatility_standard' | 'jump',
+    activeTab: 'all' | 'volatility_1s' | 'volatility_standard' | 'jump',
+    adminUserId: number
+  ) {
+    const currentGov = await getTelegramAssetGovernanceConfig(true);
+    const nextVal = !currentGov.enabledCategories[category];
+
+    await updateTelegramAssetGovernanceConfig({
+      enabledCategories: { [category]: nextVal },
+      updatedBy: `telegram_admin_${adminUserId}`,
+    });
+
+    const categoryName = category === 'volatility_1s' ? 'Volatility 1s' : category === 'volatility_standard' ? 'Standard Volatility' : 'Jump Indices';
+    const statusMsg = nextVal ? `🟢 Enabled category *${categoryName}*` : `🔴 Disabled category *${categoryName}*`;
+
+    await this.renderAssetScanner(
+      chatId,
+      messageId,
+      activeTab,
+      `✅ *ASSET GOVERNANCE UPDATED*\n${statusMsg} for Telegram traders.`
+    );
+  }
+
+  async handleToggleSymbol(
+    chatId: number,
+    messageId: number,
+    symbol: string,
+    activeTab: 'all' | 'volatility_1s' | 'volatility_standard' | 'jump',
+    adminUserId: number
+  ) {
+    const upperSym = symbol.toUpperCase();
+    const currentGov = await getTelegramAssetGovernanceConfig(true);
+    let nextDisabled = [...currentGov.disabledSymbols];
+
+    if (nextDisabled.includes(upperSym)) {
+      nextDisabled = nextDisabled.filter((s) => s !== upperSym);
+    } else {
+      nextDisabled.push(upperSym);
+    }
+
+    await updateTelegramAssetGovernanceConfig({
+      disabledSymbols: nextDisabled,
+      updatedBy: `telegram_admin_${adminUserId}`,
+    });
+
+    const isNowDisabled = nextDisabled.includes(upperSym);
+    const statusMsg = isNowDisabled ? `🔴 Disabled symbol *${upperSym}*` : `🟢 Approved symbol *${upperSym}*`;
+
+    await this.renderAssetScanner(
+      chatId,
+      messageId,
+      activeTab,
+      `✅ *SYMBOL WHITELIST UPDATED*\n${statusMsg} for Telegram traders.`
+    );
   }
 }

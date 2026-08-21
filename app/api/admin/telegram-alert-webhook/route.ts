@@ -125,6 +125,19 @@ export async function POST(req: NextRequest) {
         await controller.handleEmergencyHalt(chatId!, messageId!, userId!);
       } else if (callbackData === 'admin_resume_trading') {
         await controller.handleResumeTrading(chatId!, messageId!, userId!);
+      } else if (callbackData.startsWith('admin_asset_tab:')) {
+        const tab = callbackData.split(':')[1] as 'all' | 'volatility_1s' | 'volatility_standard' | 'jump';
+        await controller.renderAssetScanner(chatId!, messageId || undefined, tab || 'all');
+      } else if (callbackData.startsWith('admin_asset_toggle_cat:')) {
+        const parts = callbackData.split(':');
+        const cat = parts[1] as 'volatility_1s' | 'volatility_standard' | 'jump';
+        const tab = (parts[2] || 'all') as 'all' | 'volatility_1s' | 'volatility_standard' | 'jump';
+        await controller.handleToggleCategory(chatId!, messageId!, cat, tab, userId!);
+      } else if (callbackData.startsWith('admin_asset_toggle_sym:')) {
+        const parts = callbackData.split(':');
+        const sym = parts[1];
+        const tab = (parts[2] || 'all') as 'all' | 'volatility_1s' | 'volatility_standard' | 'jump';
+        await controller.handleToggleSymbol(chatId!, messageId!, sym, tab, userId!);
       }
       return NextResponse.json({ ok: true });
     }
@@ -184,6 +197,11 @@ export async function POST(req: NextRequest) {
 
     if (text === '/logs') {
       await controller.renderLogsDashboard(chatId!);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (text === '/assets' || text === '/scanner' || text === '/universe') {
+      await controller.renderAssetScanner(chatId!);
       return NextResponse.json({ ok: true });
     }
 

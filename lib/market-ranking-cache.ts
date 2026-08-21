@@ -2,6 +2,7 @@ import { getDb, initDbSchema } from './db';
 import { getLiveRiseFallSymbols } from './rise-fall-symbols';
 import { fetchDerivTickHistory } from './ticks-helper';
 import { TELEGRAM_SUPPORTED_HORIZONS } from './duration-utils';
+import { getTelegramAssetGovernanceConfig, isSymbolApprovedForTelegram } from './ops-runtime-config';
 
 export interface RankedAssetItem {
   symbol: string;
@@ -115,20 +116,21 @@ export async function refreshLiveMarketRankings(
     const startTime = Date.now();
 
     try {
-    // 1. Discover active volatility symbols
+    // 1. Discover active symbols and apply dynamic asset governance whitelist
     const discovered = await getLiveRiseFallSymbols(true, false);
+    const governanceConfig = await getTelegramAssetGovernanceConfig();
     
     if (onProgress) await onProgress('data_stream');
 
     const eligible = discovered.filter(
-      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && item.categoryKeys.includes('volatility')
+      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && isSymbolApprovedForTelegram(item.symbol, item.categoryKeys, governanceConfig)
     );
 
     if (eligible.length === 0) {
       throw new Error('MARKET_RANKINGS_NO_ELIGIBLE_SYMBOLS');
     }
 
-    // Stage 1: Lightweight Screening (Filtering active assets)
+    // Stage 1: Lightweight Screening across volatility 1s, standard volatility, and jump assets
     const stage1Candidates = eligible.map((item) => {
       const volatilityIndexNum = parseInt(item.symbol.replace(/\D/g, ''), 10) || 50;
       return {
@@ -137,7 +139,7 @@ export async function refreshLiveMarketRankings(
       };
     });
 
-    const topCandidates = stage1Candidates.slice(0, 5);
+    const topCandidates = stage1Candidates.slice(0, 8);
 
     if (onProgress) await onProgress('ai_analysis');
 
