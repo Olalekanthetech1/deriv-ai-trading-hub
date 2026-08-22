@@ -129,7 +129,7 @@ function deriveCategoryKeys(item: any, symbol: string): string[] {
  */
 export async function getLiveRiseFallSymbols(
   _forceRefresh = false,
-  _allowCachedOnError = false,
+  _unusedFallbackOption = false,
 ): Promise<RiseFallSymbolMetadata[]> {
   let ws: WebSocket | null = null;
   try {
