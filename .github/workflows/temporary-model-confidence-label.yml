@@ -1,0 +1,58 @@
+name: Temporary Telegram Model Confidence Label Fix
+
+on:
+  push:
+    branches: ['fix/telegram-model-confidence-label']
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply exact Telegram display corrections
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('lib/telegram-trade-controller.ts')
+          s = p.read_text()
+          replacements = {
+              'Calibrating win probabilities...': 'Validating live model confidence...',
+              'Target Locked: Loading highest win-rate assets... ⏳': 'Target Locked: Ranking highest-confidence live signals... ⏳',
+              'Win rate = *${res.winRate}%*': 'Model confidence = *${res.winRate}%*',
+              'Highest chance to win right now:': 'Highest-confidence live signals right now:',
+              "escapeMarkdown(rankingSnapshot.modelVersion || 'v2-production')": 'escapeMarkdown(rankingSnapshot.modelVersion)',
+          }
+          for old, new in replacements.items():
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one occurrence of {old!r}, found {count}')
+              s = s.replace(old, new)
+          p.write_text(s)
+          PY
+
+      - name: Verify exact corrections
+        run: |
+          grep -Fq 'Model confidence = *${res.winRate}%*' lib/telegram-trade-controller.ts
+          grep -Fq 'Validating live model confidence...' lib/telegram-trade-controller.ts
+          grep -Fq 'Ranking highest-confidence live signals...' lib/telegram-trade-controller.ts
+          grep -Fq 'Highest-confidence live signals right now:' lib/telegram-trade-controller.ts
+          ! grep -Fq "rankingSnapshot.modelVersion || 'v2-production'" lib/telegram-trade-controller.ts
+          ! grep -Fq 'Win rate = *${res.winRate}%*' lib/telegram-trade-controller.ts
+
+      - name: Commit source correction
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/telegram-trade-controller.ts
+          git diff --cached --check
+          git diff --cached -- lib/telegram-trade-controller.ts
+          git commit -m 'fix(telegram): label model confidence accurately'
+          git push origin HEAD:${GITHUB_REF_NAME}
