@@ -1156,7 +1156,7 @@ export class TelegramBotController {
       return;
     }
 
-    const maxTrades = Math.max(1, options?.maxTrades ?? 1);
+    const maxTrades = Math.max(1, options?.maxTrades ?? user.max_trades ?? 1);
     const maxSteps = Math.max(1, user.max_steps || 1);
     const scalingFactor = Math.max(1.0, Number(user.scaling_factor) || 2.0);
 
