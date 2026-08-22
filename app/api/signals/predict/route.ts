@@ -157,10 +157,14 @@ export async function POST(req: NextRequest) {
           .filter(Boolean) as Array<{ value: number; unit: DurationSelectUnit }>)
       : undefined;
     const modeValue = String(body?.mode || '').trim();
-    const mode: HorizonDecisionMode = modeValue === 'auto' ? 'auto' : modeValue === 'ai_assist' ? 'ai_assist' : modeValue === 'manual' ? 'manual' : (() => { throw new Error('ANALYSIS_MODE_REQUIRED'); })();
+    const mode: HorizonDecisionMode = modeValue === 'ai_assist' ? 'ai_assist' : modeValue === 'manual' ? 'manual' : 'auto';
 
     const sql = getDb();
     if (!sql) throw new Error('ANALYSIS_DATABASE_UNAVAILABLE');
+
+    const eligibleHorizons = await getEligibleProductionHorizons(symbol);
+    if (!eligibleHorizons.length) throw new Error(`NO_VALIDATED_PRODUCTION_MODELS:${symbol}:ANY`);
+
     const authoritativeAssetContext = await resolveAuthoritativeAssetContext(symbol);
     const assetClass = authoritativeAssetContext.assetClass;
     const marketType = authoritativeAssetContext.marketType;
@@ -182,9 +186,6 @@ export async function POST(req: NextRequest) {
       marketType,
       requiredContextTicks: tickList.length,
     });
-
-    const eligibleHorizons = await getEligibleProductionHorizons(symbol);
-    if (!eligibleHorizons.length) throw new Error(`NO_VALIDATED_PRODUCTION_MODELS:${symbol}:ANY`);
 
     const initialEvaluationHorizon = (mode === 'manual' || eligibleHorizons.some((h) => sameHorizon(h, requestedHorizon)))
       ? requestedHorizon
@@ -299,6 +300,7 @@ export async function POST(req: NextRequest) {
     const errorModelBreakdown = err instanceof Error && 'modelBreakdown' in err ? (err as any).modelBreakdown : undefined;
     await recordObservabilityEvent({ category: 'trading', severity: 'error', service: 'signal-prediction', eventType: 'signal_prediction_failed', message: `Signal prediction failed for request ${correlationId}.`, correlationId, metadata: { diagnostic, errorCode: message.slice(0, 300), modelBreakdown: errorModelBreakdown } });
     console.error(`[Signal Prediction Error] correlationId=${correlationId}:`, err);
-    return NextResponse.json({ success: false, diagnostic, correlationId, error: message, modelBreakdown: diagnostic ? errorModelBreakdown : undefined }, { status: 503, headers: responseHeaders });
+    const status = message.startsWith('NO_VALIDATED_PRODUCTION_MODELS') ? 422 : 503;
+    return NextResponse.json({ success: false, diagnostic, correlationId, error: message, modelBreakdown: diagnostic ? errorModelBreakdown : undefined }, { status, headers: responseHeaders });
   }
 }

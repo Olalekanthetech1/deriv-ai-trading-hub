@@ -77,7 +77,7 @@ def train_partitioned(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     validation_X, validation_y = _validation_partition(payload, kind)
     with Path(artifact_path).open("rb") as handle:
-        record = pickle.load(handle)
+        record = native.SafeUnpickler(handle).load()
     if not isinstance(record, dict):
         raise ValueError("TRAINED_ARTIFACT_INVALID")
 

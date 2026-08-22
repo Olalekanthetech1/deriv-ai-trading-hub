@@ -1,6 +1,7 @@
 import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';
 import { TELEGRAM_SUPPORTED_HORIZONS } from './duration-utils';
 import { getTelegramAssetGovernanceConfig, isSymbolApprovedForTelegram } from './ops-runtime-config';
+import { getProductionModelSymbols } from './production-model-resolver';
 import { randomUUID } from 'node:crypto';
 
 export interface RankedAssetItem {
@@ -97,12 +98,14 @@ export async function refreshLiveMarketRankings(
 ): Promise<LiveMarketRankingSnapshot> {
   const discovered: RiseFallSymbolMetadata[] = await getLiveRiseFallSymbols(true, false);
   const governanceConfig = await getTelegramAssetGovernanceConfig();
+  const productionSymbols = await getProductionModelSymbols();
   const eligible = discovered.filter(
     (item) =>
       item.isAvailable &&
       item.isOpen &&
       item.isRiseFallSupported &&
-      isSymbolApprovedForTelegram(item.symbol, item.categoryKeys, governanceConfig),
+      isSymbolApprovedForTelegram(item.symbol, item.categoryKeys, governanceConfig) &&
+      (productionSymbols.size === 0 || productionSymbols.has(item.symbol.toUpperCase())),
   );
 
   if (!eligible.length) throw new Error('MARKET_RANKINGS_NO_ELIGIBLE_SYMBOLS');

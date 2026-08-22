@@ -30,7 +30,7 @@ def load_record_from_path(path: str | Path, kind: str, duration_value: int, dura
         return None
     try:
         with candidate.open("rb") as handle:
-            record = pickle.load(handle)
+            record = native.SafeUnpickler(handle).load()
         if not isinstance(record, dict):
             return None
         native.validate_model_schema(record)

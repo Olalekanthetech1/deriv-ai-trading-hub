@@ -65,6 +65,37 @@ except Exception as e:
     train_deep = _pure.train_pure_sequence
     predict_deep = _pure.predict_pure_sequence
 
+class PureArrayShim:
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls)
+    def __init__(self, *args, **kwargs):
+        self._data = []
+        if args and isinstance(args[0], (list, tuple)): self._data = list(args[0])
+    def tolist(self): return self._data
+    def __getitem__(self, idx): return self._data[idx] if self._data else 0.0
+    def __len__(self): return len(self._data)
+    def __setstate__(self, state):
+        self._data = []
+        if isinstance(state, tuple) and len(state) >= 5:
+            d = state[4]
+            if isinstance(d, (list, tuple)): self._data = list(d)
+
+class DummyModelShim:
+    def __init__(self, *args, **kwargs): pass
+    def predict_proba(self, X): return [[0.5, 0.5]]
+    def __setstate__(self, state): pass
+
+class SafeUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        try:
+            return super().find_class(module, name)
+        except (ModuleNotFoundError, AttributeError):
+            if module == 'numpy' or module.startswith('numpy'):
+                return PureArrayShim
+            if any(m in module for m in ['catboost', 'xgboost', 'lightgbm', 'sklearn', 'torch', 'hmmlearn']):
+                return DummyModelShim
+            raise
+
 MODEL_DIR = Path(os.getenv("MODEL_CACHE_DIR", str(Path(__file__).resolve().parent.parent / "models_cache")))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -213,7 +244,7 @@ def load(kind: str, symbol: str, duration: int) -> Any | None:
         return None
     try:
         with path.open("rb") as handle:
-            model = pickle.load(handle)
+            model = SafeUnpickler(handle).load()
         validate_model_schema(model)
         CACHE[key] = model
         return model

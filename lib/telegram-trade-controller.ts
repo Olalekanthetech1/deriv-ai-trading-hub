@@ -5,6 +5,7 @@ import { refreshLiveMarketRankings, type LiveMarketRankingSnapshot } from './mar
 import { neon } from '@neondatabase/serverless';
 import { getDbConnectionString } from './db';
 import { getGlobalTradingCircuitBreakerConfig, getTelegramBrandingRuntimeConfig, getTelegramAssetGovernanceConfig, isSymbolApprovedForTelegram } from './ops-runtime-config';
+import { getProductionModelSymbols } from './production-model-resolver';
 import {
   claimTelegramTradeIntent,
   decryptSecret,
@@ -206,8 +207,9 @@ export class TelegramBotController {
   private async getAuthoritativeTelegramSymbols(): Promise<RiseFallSymbolMetadata[]> {
     const discovered = await getLiveRiseFallSymbols(true, false);
     const gov = await getTelegramAssetGovernanceConfig();
+    const productionSymbols = await getProductionModelSymbols();
     const eligible = discovered.filter(
-      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && isSymbolApprovedForTelegram(item.symbol, item.categoryKeys, gov)
+      (item) => item.isAvailable && item.isOpen && item.isRiseFallSupported && isSymbolApprovedForTelegram(item.symbol, item.categoryKeys, gov) && (productionSymbols.size === 0 || productionSymbols.has(item.symbol.toUpperCase()))
     );
     if (eligible.length === 0) throw new Error('TELEGRAM_SYMBOL_UNIVERSE_EMPTY');
     return eligible;
@@ -1069,7 +1071,14 @@ export class TelegramBotController {
     }
   }
 
-  async executeTrade(chatId: number, messageId: number, symbol: string, stake: number, idempotencyKey: string) {
+  async executeTrade(
+    chatId: number,
+    messageId: number,
+    symbol: string,
+    stake: number,
+    idempotencyKey: string,
+    options?: { maxTrades?: number }
+  ) {
     const user = await this.getUser(chatId);
     if (!user) return;
 
@@ -1147,10 +1156,9 @@ export class TelegramBotController {
       return;
     }
 
-    const isAuto = user.is_autotrading;
-    const maxTrades = isAuto ? (user.max_trades || 1) : 1;
-    const maxSteps = isAuto ? (user.max_steps || 1) : 1;
-    const scalingFactor = isAuto ? (Number(user.scaling_factor) || 1.0) : 1.0;
+    const maxTrades = Math.max(1, options?.maxTrades ?? 1);
+    const maxSteps = Math.max(1, user.max_steps || 1);
+    const scalingFactor = Math.max(1.0, Number(user.scaling_factor) || 2.0);
 
     let initialSignal: LiveSignal;
     try {

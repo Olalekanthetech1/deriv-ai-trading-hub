@@ -91,7 +91,10 @@ export async function evaluateProductionEnsemble(ticks: TickPoint[], options: { 
 
   const schemaContract = await getMlRuntimeSchemaContract({ durationValue, durationUnit });
   const remote = await mlRuntimeClient.sendCommand('predict_ensemble', { symbol, durationSecs: Number(durationSecs), durationValue, durationUnit, assetCategory, featureVector, featureSequence, modelTypes: activeEnsembleKeys, productionModels: governedProductionModels, schemaContract });
-  if (!remote?.success || !remote.models) throw new Error('NATIVE_ML_ENSEMBLE_UNAVAILABLE');
+  if (!remote?.success || !remote.models) {
+    console.error('[Predict Ensemble Error] Remote response:', JSON.stringify(remote));
+    throw new Error('NATIVE_ML_ENSEMBLE_UNAVAILABLE');
+  }
 
   const hmm = ensembleConfig.enableRegimeModel ? remote.models.hmm : null;
   const iso = ensembleConfig.enableAnomalyModel ? remote.models.isolation_forest : null;

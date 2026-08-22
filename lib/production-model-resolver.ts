@@ -403,6 +403,19 @@ export async function getEligibleProductionHorizons(symbol: string): Promise<Arr
   return list;
 }
 
+export async function getProductionModelSymbols(): Promise<Set<string>> {
+  if (!(await initDbSchema())) return new Set();
+  const sql = getDb();
+  if (!sql) return new Set();
+  const rows = await sql`
+    SELECT DISTINCT UPPER(asset_symbol) as symbol
+    FROM ml_model_registry_v2
+    WHERE status = 'production'
+  `;
+  if (!rows || !rows.length) return new Set();
+  return new Set((rows as any[]).map((r) => String(r.symbol).toUpperCase()));
+}
+
 export async function getProductionModelHealth(symbol?: string) {
   if (!(await initDbSchema())) throw new Error('PRODUCTION_MODEL_REGISTRY_UNAVAILABLE');
   const sql = getDb();

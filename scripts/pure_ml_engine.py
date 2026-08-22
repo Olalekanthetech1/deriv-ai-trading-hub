@@ -6,10 +6,13 @@ using only built-in Python standard libraries (math, random, statistics, json, p
 """
 from __future__ import annotations
 
+import builtins
 import math
 import random
 import time
 from typing import Any, Sequence, List, Tuple, Union
+
+_py_all = builtins.all
 
 # Types
 int64 = int
@@ -147,13 +150,10 @@ def all(arr: Any) -> bool:
 
     def _check(x):
         if isinstance(x, list):
-            return builtins_all(_check(v) for v in x)
+            return _py_all(_check(v) for v in x)
         return bool(x)
 
     return _check(data)
-
-
-builtins_all = all
 
 
 def mean(arr: Any) -> float:

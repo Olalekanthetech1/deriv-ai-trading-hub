@@ -196,6 +196,90 @@ async function discoverUnit(session: DerivDiscoverySession, symbol: string, capa
   return null;
 }
 
+function parseDurationString(str: unknown): { value: number; unit: DerivDurationUnit } | null {
+  if (typeof str !== 'string') return null;
+  const match = str.trim().toLowerCase().match(/^(\d+)([tsmhd])$/);
+  if (!match) return null;
+  const value = parseInt(match[1], 10);
+  const unit = match[2] as DerivDurationUnit;
+  if (!Number.isSafeInteger(value) || value <= 0) return null;
+  return { value, unit };
+}
+
+function extractRangesFromContractsFor(symbol: string, response: RecordLike): DerivDurationRange[] {
+  const contractsFor = asRecord(response?.contracts_for);
+  const available = contractsFor?.available;
+  if (!Array.isArray(available)) return [];
+
+  const map = new Map<DerivDurationUnit, { unit: DerivDurationUnit; min: number; max: number; step: number; tradeTypes: string[] }>();
+
+  for (const rawItem of available) {
+    const item = asRecord(rawItem);
+    if (!item) continue;
+    const type = String(item.contract_type ?? '').trim().toUpperCase();
+    if (!RISE_FALL_TYPES.has(type)) continue;
+
+    const expiryType = String(item.expiry_type ?? '').trim().toLowerCase();
+    const minDur = parseDurationString(item.min_contract_duration);
+    const maxDur = parseDurationString(item.max_contract_duration);
+
+    if (expiryType === 'tick' && minDur && maxDur && minDur.unit === 't' && maxDur.unit === 't') {
+      const existing = map.get('t');
+      if (existing) {
+        existing.min = Math.min(existing.min, minDur.value);
+        existing.max = Math.max(existing.max, maxDur.value);
+        if (!existing.tradeTypes.includes(type)) existing.tradeTypes.push(type);
+      } else {
+        map.set('t', { unit: 't', min: minDur.value, max: maxDur.value, step: 1, tradeTypes: [type] });
+      }
+    } else if (expiryType === 'intraday' && minDur) {
+      if (minDur.unit === 's') {
+        const minS = minDur.value;
+        const maxS = DERIV_TIME_DURATION_BANDS.s.max;
+        const existingS = map.get('s');
+        if (existingS) { existingS.min = Math.min(existingS.min, minS); if (!existingS.tradeTypes.includes(type)) existingS.tradeTypes.push(type); }
+        else { map.set('s', { unit: 's', min: minS, max: maxS, step: 1, tradeTypes: [type] }); }
+
+        const minM = Math.max(1, Math.ceil(minS / 60));
+        const maxM = DERIV_TIME_DURATION_BANDS.m.max;
+        const existingM = map.get('m');
+        if (existingM) { existingM.min = Math.min(existingM.min, minM); if (!existingM.tradeTypes.includes(type)) existingM.tradeTypes.push(type); }
+        else { map.set('m', { unit: 'm', min: minM, max: maxM, step: 1, tradeTypes: [type] }); }
+
+        const minH = 1;
+        const maxH = DERIV_TIME_DURATION_BANDS.h.max;
+        const existingH = map.get('h');
+        if (existingH) { existingH.min = Math.min(existingH.min, minH); if (!existingH.tradeTypes.includes(type)) existingH.tradeTypes.push(type); }
+        else { map.set('h', { unit: 'h', min: minH, max: maxH, step: 1, tradeTypes: [type] }); }
+      } else if (minDur.unit === 'm') {
+        const minM = minDur.value;
+        const maxM = DERIV_TIME_DURATION_BANDS.m.max;
+        const existingM = map.get('m');
+        if (existingM) { existingM.min = Math.min(existingM.min, minM); if (!existingM.tradeTypes.includes(type)) existingM.tradeTypes.push(type); }
+        else { map.set('m', { unit: 'm', min: minM, max: maxM, step: 1, tradeTypes: [type] }); }
+
+        const minH = 1;
+        const maxH = DERIV_TIME_DURATION_BANDS.h.max;
+        const existingH = map.get('h');
+        if (existingH) { existingH.min = Math.min(existingH.min, minH); if (!existingH.tradeTypes.includes(type)) existingH.tradeTypes.push(type); }
+        else { map.set('h', { unit: 'h', min: minH, max: maxH, step: 1, tradeTypes: [type] }); }
+      }
+    }
+  }
+
+  return Array.from(map.values())
+    .filter(r => TRAINING_DURATION_UNITS.includes(r.unit))
+    .map(r => ({
+      id: `${symbol}:${r.tradeTypes.join(',')}:${r.unit}:${r.min}-${r.max}:${r.step}`,
+      unit: r.unit,
+      min: r.min,
+      max: r.max,
+      step: r.step,
+      tradeTypes: r.tradeTypes,
+      source: 'deriv-proposal-probe' as const,
+    }));
+}
+
 async function discover(symbol: string): Promise<DerivDurationDiscovery> {
   const session = new DerivDiscoverySession();
   try {
@@ -206,6 +290,11 @@ async function discover(symbol: string): Promise<DerivDurationDiscovery> {
     const contracts = await session.request({ contracts_for: symbol }, 'contracts_for');
     const capabilities = contractCapabilities(contracts);
     if (!capabilities.length) throw new Error(`Deriv returned no Rise/Fall (CALL/PUT) contracts for ${symbol}.`);
+
+    const extractedRanges = extractRangesFromContractsFor(symbol, contracts);
+    if (extractedRanges.length > 0) {
+      return { symbol, ranges: extractedRanges, fetchedAt: new Date().toISOString(), source: 'deriv-proposal-probe' };
+    }
 
     const units = TRAINING_DURATION_UNITS.filter(unit => capabilities.some(c => unitsForExpiryType(c.expiryType).includes(unit)));
     const ranges: DerivDurationRange[] = [];
