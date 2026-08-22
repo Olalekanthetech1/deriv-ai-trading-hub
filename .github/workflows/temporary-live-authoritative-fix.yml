@@ -1,0 +1,116 @@
+name: Temporary Authoritative Live Signal Fix
+
+on:
+  push:
+    branches: ['fix/live-authoritative-signal-throughput']
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Apply targeted authoritative-live fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_exact(path, replacements):
+              p = Path(path)
+              s = p.read_text()
+              original = s
+              for old, new in replacements:
+                  count = s.count(old)
+                  if count != 1:
+                      raise SystemExit(f'{path}: expected exactly one occurrence of {old!r}, got {count}')
+                  s = s.replace(old, new)
+              if s == original:
+                  raise SystemExit(f'{path}: no change produced')
+              p.write_text(s)
+
+          # 1) Duration discovery: remove all persistent/in-flight result reuse.
+          duration = Path('lib/deriv-duration-registry.ts').read_text()
+          duration = duration.replace("const DISCOVERY_TTL_MS = 10 * 60 * 1000;\n", "")
+          duration = duration.replace("const cache = new Map<string, { value: DerivDurationDiscovery; expiresAt: number }>();\n", "")
+          duration = duration.replace("const inFlight = new Map<string, Promise<DerivDurationDiscovery>>();\n", "")
+          old_fn = '''export async function getDerivDurationDiscovery(symbol: string): Promise<DerivDurationDiscovery> {\n  const normalized = String(symbol ?? '').trim().toUpperCase();\n  if (!normalized) throw new Error('A Deriv symbol is required for duration discovery.');\n  const cached = cache.get(normalized);\n  if (cached && cached.expiresAt > Date.now()) return cached.value;\n  const existing = inFlight.get(normalized);\n  if (existing) return existing;\n  const promise = discover(normalized)\n    .then(value => { cache.set(normalized, { value, expiresAt: Date.now() + DISCOVERY_TTL_MS }); return value; })\n    .catch(error => {\n      if (!isUnsupportedRiseFallSymbol(error)) throw error;\n      return {\n        symbol: normalized,\n        ranges: [],\n        fetchedAt: new Date().toISOString(),\n        source: 'deriv-proposal-probe' as const,\n        warning: error instanceof Error ? error.message : String(error),\n      };\n    })\n    .finally(() => { inFlight.delete(normalized); });\n  inFlight.set(normalized, promise);\n  return promise;\n}\n'''
+          new_fn = '''export async function getDerivDurationDiscovery(symbol: string): Promise<DerivDurationDiscovery> {\n  const normalized = String(symbol ?? '').trim().toUpperCase();\n  if (!normalized) throw new Error('A Deriv symbol is required for duration discovery.');\n\n  try {\n    return await discover(normalized);\n  } catch (error) {\n    if (!isUnsupportedRiseFallSymbol(error)) throw error;\n    return {\n      symbol: normalized,\n      ranges: [],\n      fetchedAt: new Date().toISOString(),\n      source: 'deriv-proposal-probe' as const,\n      warning: error instanceof Error ? error.message : String(error),\n    };\n  }\n}\n'''
+          if old_fn not in duration:
+              raise SystemExit('lib/deriv-duration-registry.ts: duration resolver function shape changed unexpectedly')
+          duration = duration.replace(old_fn, new_fn)
+          Path('lib/deriv-duration-registry.ts').write_text(duration)
+
+          # 2) Ranking: bound live prediction fan-out; do not reuse results.
+          ranking = Path('lib/live-market-ranking.ts').read_text()
+          marker = "function isValidPrediction(data: any, expectedSymbol: string): boolean {"
+          helper = '''function getLiveRankingConcurrency(): number {\n  const configured = Number(process.env.LIVE_RANKING_MAX_CONCURRENCY);\n  if (Number.isSafeInteger(configured) && configured > 0) return Math.min(8, Math.max(1, configured));\n  return 4;\n}\n\nasync function settleWithConcurrency<T>(\n  items: readonly RiseFallSymbolMetadata[],\n  worker: (item: RiseFallSymbolMetadata) => Promise<T>,\n): Promise<PromiseSettledResult<T>[]> {\n  const results = new Array<PromiseSettledResult<T>>(items.length);\n  let cursor = 0;\n  const concurrency = Math.min(getLiveRankingConcurrency(), items.length);\n\n  const run = async () => {\n    while (true) {\n      const index = cursor++;\n      if (index >= items.length) return;\n      try {\n        results[index] = { status: 'fulfilled', value: await worker(items[index]) };\n      } catch (reason) {\n        results[index] = { status: 'rejected', reason };\n      }\n    }\n  };\n\n  await Promise.all(Array.from({ length: concurrency }, () => run()));\n  return results;\n}\n\n'''
+          if helper.strip() not in ranking:
+              if marker not in ranking:
+                  raise SystemExit('lib/live-market-ranking.ts: validation helper anchor missing')
+              ranking = ranking.replace(marker, helper + marker, 1)
+
+          old_block = '''  const settled = await Promise.allSettled(\n    eligible.map(async (metadata) => {\n'''
+          new_block = '''  const settled = await settleWithConcurrency(eligible, async (metadata) => {\n'''
+          if ranking.count(old_block) != 1:
+              raise SystemExit('lib/live-market-ranking.ts: ranking fan-out block anchor changed unexpectedly')
+          ranking = ranking.replace(old_block, new_block, 1)
+          closing = '''    }),\n  );\n\n  const rankings = settled'''
+          replacement = '''    },\n  );\n\n  const rankings = settled'''
+          if ranking.count(closing) != 1:
+              raise SystemExit('lib/live-market-ranking.ts: ranking fan-out closing anchor changed unexpectedly')
+          ranking = ranking.replace(closing, replacement, 1)
+          Path('lib/live-market-ranking.ts').write_text(ranking)
+
+          # 3) Direct Telegram signal requests: explicitly disable fetch caching.
+          controller = Path('lib/telegram-trade-controller.ts').read_text()
+          old_fetch = '''      method: 'POST',\n      headers: {\n        'Content-Type': 'application/json',\n        'Cache-Control': 'no-store',\n      },'''
+          new_fetch = '''      method: 'POST',\n      cache: 'no-store',\n      headers: {\n        'Content-Type': 'application/json',\n        'Cache-Control': 'no-store, no-cache, max-age=0',\n        Pragma: 'no-cache',\n        'x-live-signal-request': 'true',\n      },'''
+          if controller.count(old_fetch) != 1:
+              raise SystemExit('lib/telegram-trade-controller.ts: live signal fetch anchor changed unexpectedly')
+          controller = controller.replace(old_fetch, new_fetch, 1)
+          Path('lib/telegram-trade-controller.ts').write_text(controller)
+
+          # 4) Prediction endpoint: preserve the true authoritative duration-discovery failure in server logs.
+          route = Path('app/api/signals/predict/route.ts').read_text()
+          old_route = '''    const discovery = await getDerivDurationDiscovery(symbol);\n    const durationOptions = buildServerDurationOptions(discovery);'''
+          new_route = '''    let discovery: Awaited<ReturnType<typeof getDerivDurationDiscovery>>;\n    try {\n      discovery = await getDerivDurationDiscovery(symbol);\n    } catch (error) {\n      console.error(\n        `[Signal Duration Discovery Error] correlationId=${correlationId} symbol=${symbol}:`,\n        error instanceof Error ? error.message : String(error),\n      );\n      throw error;\n    }\n    if (!discovery.ranges.length) {\n      console.error(\n        `[Signal Duration Discovery Unavailable] correlationId=${correlationId} symbol=${symbol}: ${discovery.warning || 'No broker-validated Rise/Fall durations returned.'}`,\n      );\n    }\n    const durationOptions = buildServerDurationOptions(discovery);'''
+          if route.count(old_route) != 1:
+              raise SystemExit('app/api/signals/predict/route.ts: duration discovery anchor changed unexpectedly')
+          route = route.replace(old_route, new_route, 1)
+          Path('app/api/signals/predict/route.ts').write_text(route)
+
+          # 5) Strengthen invariant coverage for zero-cache duration discovery and bounded fan-out.
+          test = Path('scripts/tests/live-signal-no-cache-invariants.mjs').read_text()
+          test = test.replace("const predictionRoute = read('app/api/signals/predict/route.ts');", "const predictionRoute = read('app/api/signals/predict/route.ts');\nconst durationRegistry = read('lib/deriv-duration-registry.ts');\n")
+          test = test.replace("  'confidence || 50',\n];", "  'confidence || 50',\n  'DISCOVERY_TTL_MS',\n  'const cache = new Map<string, { value: DerivDurationDiscovery; expiresAt: number }>();',\n  'const inFlight = new Map<string, Promise<DerivDurationDiscovery>>();',\n];")
+          test = test.replace("if (!compatibility.includes(\"from './live-market-ranking'\")) {", "if (!durationRegistry.includes('return await discover(normalized);')) {\n  throw new Error('Live signal no-cache invariant failed: duration discovery is not direct per invocation.');\n}\nif (!ranking.includes('settleWithConcurrency')) {\n  throw new Error('Live signal throughput invariant failed: ranking fan-out is unbounded.');\n}\nif (!controller.includes(\"cache: 'no-store'\")) {\n  throw new Error('Telegram live-signal invariant failed: direct signal request is not explicitly no-store.');\n}\nif (!predictionRoute.includes('[Signal Duration Discovery Unavailable]')) {\n  throw new Error('Live signal diagnostic invariant failed: duration discovery failures are not explicitly logged.');\n}\nif (!compatibility.includes(\"from './live-market-ranking'\")) {")
+          test = test.replace("const ranking = read('lib/live-market-ranking.ts');", "const ranking = read('lib/live-market-ranking.ts');\nconst controller = read('lib/telegram-trade-controller.ts');")
+          Path('scripts/tests/live-signal-no-cache-invariants.mjs').write_text(test)
+          PY
+
+      - name: Verify targeted source invariants
+        run: |
+          node scripts/tests/live-signal-no-cache-invariants.mjs
+          node scripts/tests/telegram-symbol-universe-invariants.mjs
+          npx tsc --noEmit --pretty false
+          npm run build
+
+      - name: Review diff and commit
+        run: |
+          git diff --check
+          git diff -- lib/deriv-duration-registry.ts lib/live-market-ranking.ts lib/telegram-trade-controller.ts app/api/signals/predict/route.ts scripts/tests/live-signal-no-cache-invariants.mjs
+          git status --short
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/deriv-duration-registry.ts lib/live-market-ranking.ts lib/telegram-trade-controller.ts app/api/signals/predict/route.ts scripts/tests/live-signal-no-cache-invariants.mjs
+          git commit -m 'fix(signals): enforce fresh bounded authoritative market analysis'
+          git push origin HEAD:${GITHUB_REF_NAME}
