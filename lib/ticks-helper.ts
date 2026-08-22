@@ -5,13 +5,6 @@ import { canonicalizeDerivSymbol } from '@/lib/deriv-symbol-utils';
 
 export type TickPoint = { price: number; timestamp: number };
 
-const inFlightTickHistory = new Map<string, Promise<TickPoint[]>>();
-
-function buildTickHistoryFlightKey(symbol: string, count: number, end: number | 'latest'): string {
-  const canonical = canonicalizeDerivSymbol(symbol);
-  return `${canonical}:${count}:${String(end)}`;
-}
-
 async function fetchDerivTickHistoryUncoalesced(
   symbol: string,
   count: number,
@@ -119,6 +112,10 @@ async function fetchDerivTickHistoryUncoalesced(
   throw lastError || new Error(`Deriv tick history failed for ${symbol}.`);
 }
 
+/**
+ * Always performs a fresh Deriv request. There is intentionally no in-flight
+ * result coalescing, persistent tick cache, or stale database fallback here.
+ */
 export async function fetchDerivTickHistory(
   symbol: string,
   count: number = 1000,
@@ -130,25 +127,14 @@ export async function fetchDerivTickHistory(
   if (!Number.isInteger(count) || count <= 0) throw new Error('TICK_HISTORY_COUNT_INVALID');
   if (!Number.isInteger(retries) || retries < 0) throw new Error('TICK_HISTORY_RETRIES_INVALID');
 
-  const key = buildTickHistoryFlightKey(normalizedSymbol, count, end);
-  const existing = inFlightTickHistory.get(key);
-  if (existing) return existing;
-
-  const request = fetchDerivTickHistoryUncoalesced(normalizedSymbol, count, end, retries);
-  inFlightTickHistory.set(key, request);
-  try {
-    return await request;
-  } finally {
-    if (inFlightTickHistory.get(key) === request) inFlightTickHistory.delete(key);
-  }
+  return fetchDerivTickHistoryUncoalesced(normalizedSymbol, count, end, retries);
 }
 
 export async function ensureMinTicks(symbol: string, minRequired: number = 100, forceDerivFetch = false) {
   if (!Number.isInteger(minRequired) || minRequired <= 0) throw new Error('TICK_REQUIREMENT_INVALID');
 
   if (forceDerivFetch) {
-    const liveTicks = await fetchDerivTickHistory(symbol, Math.max(1000, minRequired), 'latest');
-    return liveTicks;
+    return fetchDerivTickHistory(symbol, Math.max(1000, minRequired), 'latest');
   }
 
   await initDbSchema();
