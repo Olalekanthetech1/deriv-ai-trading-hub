@@ -20,7 +20,10 @@ const forbidden = [
   'inFlightTickHistory',
   "FROM market_assets",
   "INSERT INTO market_assets",
-  "v2-production",
+  'v2-production',
+  'v2-microstructure',
+  'stage1Score',
+  'medianCadenceMs',
   'confidence) || 50',
   'confidence || 50',
 ];
@@ -39,6 +42,9 @@ if (!ranking.includes("cache: 'no-store'")) {
 }
 if (!ranking.includes("'x-live-signal-request': 'true'")) {
   throw new Error('Live signal cache invariant failed: direct live-request marker is missing.');
+}
+if (!ranking.includes('predictionTimestamp')) {
+  throw new Error('Live signal cache invariant failed: freshness is not derived from authoritative prediction timestamps.');
 }
 if (!symbols.includes('Dynamically discover active Deriv instruments on every invocation.')) {
   throw new Error('Live signal cache invariant failed: symbol discovery is not explicitly uncached.');
