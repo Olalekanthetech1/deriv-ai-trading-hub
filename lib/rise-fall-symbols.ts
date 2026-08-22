@@ -15,11 +15,6 @@ export interface RiseFallSymbolMetadata {
   categoryKeys: string[];
 }
 
-let cachedSymbols: RiseFallSymbolMetadata[] | null = null;
-let cacheExpiresAt = 0;
-const CACHE_TTL_MS = 15 * 60 * 1000;
-let inFlightDiscovery: Promise<RiseFallSymbolMetadata[]> | null = null;
-
 export function hasRiseFallContracts(contractTypes: Iterable<string>): boolean {
   const set = new Set(Array.from(contractTypes).map((t) => String(t).trim().toUpperCase()));
   return set.has('CALL') && set.has('PUT');
@@ -28,7 +23,7 @@ export function hasRiseFallContracts(contractTypes: Iterable<string>): boolean {
 export async function checkDerivSymbolRiseFall(
   ws: WebSocket,
   symbol: string,
-  timeoutMs = 5000
+  timeoutMs = 5000,
 ): Promise<{ isRiseFallSupported: boolean; contractTypes: string[] }> {
   const reqId = Math.floor(Math.random() * 1_000_000);
 
@@ -56,7 +51,7 @@ export async function checkDerivSymbolRiseFall(
           return;
         }
         const types = Array.from(
-          new Set(available.map((c: any) => String(c?.contract_type || '').toUpperCase()))
+          new Set(available.map((c: any) => String(c?.contract_type || '').toUpperCase())),
         ).filter(Boolean);
         resolve({ isRiseFallSupported: hasRiseFallContracts(types), contractTypes: types });
       } catch {
@@ -90,12 +85,23 @@ function deriveCategoryKeys(item: any, symbol: string): string[] {
   const categories = new Set<string>();
 
   if (market === 'synthetic_index') categories.add('synthetic');
-  if (market === 'forex' || submarket === 'major_pairs' || submarket === 'minor_pairs' || (upperSymbol.startsWith('FRX') && !/(XAU|XAG|XPD|XPT|BRO)/i.test(symbol))) {
+  if (
+    market === 'forex' ||
+    submarket === 'major_pairs' ||
+    submarket === 'minor_pairs' ||
+    (upperSymbol.startsWith('FRX') && !/(XAU|XAG|XPD|XPT|BRO)/i.test(symbol))
+  ) {
     categories.add('forex');
     if (submarket === 'major_pairs') categories.add('forex_major');
   }
 
-  if (market === 'commodities' || market === 'commodity' || submarket === 'metals' || submarket === 'energy' || /(XAU|XAG|XPD|XPT|BRO)/i.test(symbol)) {
+  if (
+    market === 'commodities' ||
+    market === 'commodity' ||
+    submarket === 'metals' ||
+    submarket === 'energy' ||
+    /(XAU|XAG|XPD|XPT|BRO)/i.test(symbol)
+  ) {
     categories.add('commodities');
     categories.add('metals');
   }
@@ -118,90 +124,78 @@ function deriveCategoryKeys(item: any, symbol: string): string[] {
 }
 
 /**
- * Dynamically discover active Deriv instruments and expose a server-authoritative
- * catalogue. The client must consume categoryKeys rather than reclassifying symbols.
+ * Dynamically discover active Deriv instruments on every invocation.
+ * No symbol catalogue is cached or reused between requests.
  */
 export async function getLiveRiseFallSymbols(
-  forceRefresh = false,
-  allowCachedOnError = true
+  _forceRefresh = false,
+  _allowCachedOnError = false,
 ): Promise<RiseFallSymbolMetadata[]> {
-  const now = Date.now();
-  if (!forceRefresh && cachedSymbols && cacheExpiresAt > now) return cachedSymbols;
-  if (inFlightDiscovery) return inFlightDiscovery;
+  let ws: WebSocket | null = null;
+  try {
+    ws = await openDerivPublicWebSocket(10_000);
 
-  inFlightDiscovery = (async () => {
-    let ws: WebSocket | null = null;
-    try {
-      ws = await openDerivPublicWebSocket(10_000);
-
-      const activeSymbols = await new Promise<any[]>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Deriv active_symbols request timed out')), 8000);
-        const onMsg = (data: WebSocket.Data) => {
-          try {
-            const parsed = JSON.parse(data.toString());
-            if (parsed.msg_type === 'active_symbols' && Array.isArray(parsed.active_symbols)) {
-              clearTimeout(timeout);
-              ws?.off('message', onMsg);
-              resolve(parsed.active_symbols);
-            } else if (parsed.error) {
-              clearTimeout(timeout);
-              ws?.off('message', onMsg);
-              reject(new Error(parsed.error.message || 'Deriv active_symbols error'));
-            }
-          } catch {
-            // Ignore malformed concurrent messages.
+    const activeSymbols = await new Promise<any[]>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Deriv active_symbols request timed out')), 8000);
+      const onMsg = (data: WebSocket.Data) => {
+        try {
+          const parsed = JSON.parse(data.toString());
+          if (parsed.msg_type === 'active_symbols' && Array.isArray(parsed.active_symbols)) {
+            clearTimeout(timeout);
+            ws?.off('message', onMsg);
+            resolve(parsed.active_symbols);
+          } else if (parsed.error) {
+            clearTimeout(timeout);
+            ws?.off('message', onMsg);
+            reject(new Error(parsed.error.message || 'Deriv active_symbols error'));
           }
-        };
-        ws!.on('message', onMsg);
-        ws!.send(JSON.stringify({ active_symbols: 'brief', req_id: 1 }));
+        } catch {
+          // Ignore malformed concurrent messages.
+        }
+      };
+      ws!.on('message', onMsg);
+      ws!.send(JSON.stringify({ active_symbols: 'brief', req_id: 1 }));
+    });
+
+    const excludedSubmarkets = new Set([
+      'crash_index',
+      'range_index',
+      'non_stable_coin',
+      'forex_basket',
+      'commodity_basket',
+    ]);
+
+    const riseFallSymbols: RiseFallSymbolMetadata[] = [];
+    for (const item of activeSymbols) {
+      const symbol = String(item.underlying_symbol || '').trim();
+      if (!symbol) continue;
+      const submarket = String(item.submarket || '').trim().toLowerCase();
+      if (excludedSubmarkets.has(submarket)) continue;
+
+      const exchangeIsOpen = item.exchange_is_open === true || item.exchange_is_open === 1 || item.exchange_is_open === '1';
+      const tradingSuspended = item.is_trading_suspended === true || item.is_trading_suspended === 1 || item.is_trading_suspended === '1';
+
+      riseFallSymbols.push({
+        symbol,
+        displayName: String(item.underlying_symbol_name || symbol),
+        market: String(item.market || ''),
+        submarket,
+        isOpen: exchangeIsOpen && !tradingSuspended,
+        isAvailable: !tradingSuspended,
+        tradeTypes: ['CALL', 'PUT'],
+        isRiseFallSupported: true,
+        categoryKeys: deriveCategoryKeys(item, symbol),
       });
-
-      const excludedSubmarkets = new Set([
-        'crash_index',
-        'range_index',
-        'non_stable_coin',
-        'forex_basket',
-        'commodity_basket',
-      ]);
-
-      const riseFallSymbols: RiseFallSymbolMetadata[] = [];
-      for (const item of activeSymbols) {
-        const symbol = String(item.underlying_symbol || '').trim();
-        if (!symbol) continue;
-        const submarket = String(item.submarket || '').trim().toLowerCase();
-        if (excludedSubmarkets.has(submarket)) continue;
-
-        const exchangeIsOpen = item.exchange_is_open === true || item.exchange_is_open === 1 || item.exchange_is_open === '1';
-        const tradingSuspended = item.is_trading_suspended === true || item.is_trading_suspended === 1 || item.is_trading_suspended === '1';
-
-        riseFallSymbols.push({
-          symbol,
-          displayName: String(item.underlying_symbol_name || symbol),
-          market: String(item.market || ''),
-          submarket,
-          isOpen: exchangeIsOpen && !tradingSuspended,
-          isAvailable: !tradingSuspended,
-          tradeTypes: ['CALL', 'PUT'],
-          isRiseFallSupported: true,
-          categoryKeys: deriveCategoryKeys(item, symbol),
-        });
-      }
-
-      cachedSymbols = riseFallSymbols;
-      cacheExpiresAt = Date.now() + CACHE_TTL_MS;
-      logger.info(`[Deriv Symbols] Dynamically discovered ${riseFallSymbols.length} Rise/Fall supported instruments.`);
-      return riseFallSymbols;
-    } catch (err: any) {
-      logger.error(`[Deriv Symbols] Failed to discover Rise/Fall symbols: ${err?.message || err}`);
-      if (allowCachedOnError && cachedSymbols && cachedSymbols.length > 0) return cachedSymbols;
-      throw err;
-    } finally {
-      if (ws) {
-        try { ws.close(); } catch {}
-      }
-      inFlightDiscovery = null;
     }
-  })();
 
-  return inFlightDiscovery;
+    logger.info(`[Deriv Symbols] Dynamically discovered ${riseFallSymbols.length} Rise/Fall supported instruments.`);
+    return riseFallSymbols;
+  } catch (err: any) {
+    logger.error(`[Deriv Symbols] Failed to discover Rise/Fall symbols: ${err?.message || err}`);
+    throw err;
+  } finally {
+    if (ws) {
+      try { ws.close(); } catch {}
+    }
+  }
 }
