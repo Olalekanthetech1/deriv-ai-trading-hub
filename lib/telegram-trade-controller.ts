@@ -911,12 +911,12 @@ export class TelegramBotController {
         } else if (stage === 'target_locked') {
           const step4Text = 
             `🤖 *AI IS ANALYZING THE MARKET*\n` +
-            `_Calibrating win probabilities..._\n\n` +
+            `_Validating live model confidence..._\n\n` +
             `📡 TERMINAL: Deriv Broker Connected ✅\n` +
             `📊 Data Stream: Active tick streams verified ✅\n` +
             `⚡ Microstructure: Velocity & fractal efficiency computed ✅\n` +
             `🧠 AI Models: Multi-horizon inference complete ✅\n` +
-            `🎯 Target Locked: Loading highest win-rate assets... ⏳`;
+            `🎯 Target Locked: Ranking highest-confidence live signals... ⏳`;
           await sendProgress(step4Text);
         }
       });
@@ -953,7 +953,7 @@ export class TelegramBotController {
       const medal = index === 0 ? '🏆' : '✅';
       const displayName = getSymbolDisplayName(res.symbol, res.name);
       const cleanName = escapeMarkdown(displayName);
-      leaderboardLines += `${medal} *${cleanName}*: Win rate = *${res.winRate}%*\n`;
+      leaderboardLines += `${medal} *${cleanName}*: Model confidence = *${res.winRate}%*\n`;
       const btnIcon = index === 0 ? '🏆' : '📈';
       keyboardButtons.push([
         {
@@ -966,12 +966,12 @@ export class TelegramBotController {
     keyboardButtons.push([{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]);
 
     const dataAgeSec = (rankingSnapshot.dataAgeMs / 1000).toFixed(1);
-    const escapedVersion = escapeMarkdown(rankingSnapshot.modelVersion || 'v2-production');
+    const escapedVersion = escapeMarkdown(rankingSnapshot.modelVersion);
     const finalMessageText =
       `📊 *CHOOSE TRADING ASSET*\n` +
       `_Select your preferred market asset_\n\n` +
       `🏆 *Bot Prediction:* _(Freshness: ${dataAgeSec}s, \`${escapedVersion}\`)_\n` +
-      `Highest chance to win right now:\n` +
+      `Highest-confidence live signals right now:\n` +
       `${leaderboardLines}\n` +
       `📌 *Make your choice below*`;
 
