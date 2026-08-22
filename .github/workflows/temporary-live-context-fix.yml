@@ -1,0 +1,83 @@
+name: Temporary Live Context Fix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  transform:
+    if: github.actor != 'github-actions[bot]' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+
+      - name: Apply request-scoped authoritative context optimization
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          auth = Path('lib/authoritative-asset-context.ts')
+          text = auth.read_text()
+          marker = "export async function resolveAuthoritativeAssetContext(symbol: string): Promise<AuthoritativeAssetContext> {"
+          if marker in text and 'resolveAuthoritativeAssetContextFromDiscovered' not in text:
+              text = text.replace(marker, "export function resolveAuthoritativeAssetContextFromDiscovered(symbol: string, discovered: RiseFallSymbolMetadata[]): AuthoritativeAssetContext {", 1)
+              text = text.replace("\n  const discovered = await getLiveRiseFallSymbols(false, false);", "", 1)
+              text += "\n\nexport async function resolveAuthoritativeAssetContext(symbol: string): Promise<AuthoritativeAssetContext> {\n  const discovered = await getLiveRiseFallSymbols(false, false);\n  return resolveAuthoritativeAssetContextFromDiscovered(symbol, discovered);\n}\n"
+          auth.write_text(text)
+
+          Path('lib/authoritative-asset-context-token.ts').write_text('''import { createHmac, timingSafeEqual } from 'node:crypto';\nimport type { AuthoritativeAssetClass, AuthoritativeAssetContext, AuthoritativeMarketType } from './authoritative-asset-context';\nimport { canonicalizeDerivSymbol } from './deriv-symbol-utils';\n\nexport type SignedAuthoritativeAssetContext = {\n  symbol: string;\n  assetCategory: number;\n  assetClass: AuthoritativeAssetClass;\n  marketType: AuthoritativeMarketType;\n};\n\nconst MAX_CONTEXT_AGE_MS = 30_000;\n\nfunction getSecret(): string {\n  const secret = String(process.env.ADMIN_SECRET_KEY || '').trim();\n  if (secret.length < 32) throw new Error('INTERNAL_AUTH_SECRET_UNAVAILABLE');\n  return secret;\n}\n\nfunction encodePayload(payload: SignedAuthoritativeAssetContext & { issuedAt: number }): string {\n  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');\n}\n\nfunction sign(encodedPayload: string): string {\n  return createHmac('sha256', getSecret()).update(encodedPayload).digest('base64url');\n}\n\nexport function createSignedAuthoritativeAssetContext(context: AuthoritativeAssetContext, issuedAt = Date.now()): string {\n  const symbol = canonicalizeDerivSymbol(context.symbol);\n  if (!symbol) throw new Error('SYMBOL_REQUIRED');\n  if (!Number.isSafeInteger(context.assetCategory)) throw new Error('ASSET_CATEGORY_REQUIRED');\n  if (!context.assetClass || !context.marketType) throw new Error('ASSET_CONTEXT_REQUIRED');\n  const payload = { symbol, assetCategory: context.assetCategory, assetClass: context.assetClass, marketType: context.marketType, issuedAt };\n  const encoded = encodePayload(payload);\n  return `${encoded}.${sign(encoded)}`;\n}\n\nexport function verifySignedAuthoritativeAssetContext(token: string, expectedSymbol: string, now = Date.now()): SignedAuthoritativeAssetContext {\n  const parts = String(token || '').split('.');\n  if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error('AUTHORITATIVE_ASSET_CONTEXT_SIGNATURE_INVALID');\n\n  const expectedSignature = sign(parts[0]);\n  const provided = Buffer.from(parts[1], 'base64url');\n  const expected = Buffer.from(expectedSignature, 'base64url');\n  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) throw new Error('AUTHORITATIVE_ASSET_CONTEXT_SIGNATURE_INVALID');\n\n  let payload: SignedAuthoritativeAssetContext & { issuedAt: number };\n  try {\n    payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));\n  } catch {\n    throw new Error('AUTHORITATIVE_ASSET_CONTEXT_PAYLOAD_INVALID');\n  }\n\n  const canonicalExpected = canonicalizeDerivSymbol(expectedSymbol);\n  if (!canonicalExpected || payload.symbol !== canonicalExpected) throw new Error('AUTHORITATIVE_ASSET_CONTEXT_SYMBOL_MISMATCH');\n  if (!Number.isSafeInteger(payload.issuedAt) || Math.abs(now - payload.issuedAt) > MAX_CONTEXT_AGE_MS) throw new Error('AUTHORITATIVE_ASSET_CONTEXT_EXPIRED');\n  if (!Number.isSafeInteger(payload.assetCategory) || !payload.assetClass || !payload.marketType) throw new Error('AUTHORITATIVE_ASSET_CONTEXT_PAYLOAD_INVALID');\n\n  return { symbol: payload.symbol, assetCategory: payload.assetCategory, assetClass: payload.assetClass, marketType: payload.marketType };\n}\n''')
+
+          ranking = Path('lib/live-market-ranking.ts')
+          r = ranking.read_text()
+          r = r.replace("import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';", "import { getLiveRiseFallSymbols, type RiseFallSymbolMetadata } from './rise-fall-symbols';\nimport { resolveAuthoritativeAssetContextFromDiscovered } from './authoritative-asset-context';\nimport { createSignedAuthoritativeAssetContext } from './authoritative-asset-context-token';", 1)
+          anchor = "  if (onProgress) await onProgress('ai_analysis');\n\n  const baseUrl = getInternalBaseUrl();"
+          replacement = "  if (onProgress) await onProgress('ai_analysis');\n\n  const signedContextBySymbol = new Map<string, string>();\n  for (const metadata of eligible) {\n    const authoritativeContext = resolveAuthoritativeAssetContextFromDiscovered(metadata.symbol, discovered);\n    signedContextBySymbol.set(metadata.symbol, createSignedAuthoritativeAssetContext(authoritativeContext));\n  }\n\n  const baseUrl = getInternalBaseUrl();"
+          if 'signedContextBySymbol' not in r:
+              r = r.replace(anchor, replacement, 1)
+          r = r.replace("        'x-live-signal-request': 'true',\n", "        'x-live-signal-request': 'true',\n        'x-authoritative-asset-context': signedContextBySymbol.get(metadata.symbol) || (() => { throw new Error(`AUTHORITATIVE_ASSET_CONTEXT_UNAVAILABLE:${metadata.symbol}`); })(),\n", 1)
+          ranking.write_text(r)
+
+          route = Path('app/api/signals/predict/route.ts')
+          q = route.read_text()
+          q = q.replace("import { resolveAuthoritativeAssetContext } from '@/lib/authoritative-asset-context';", "import { resolveAuthoritativeAssetContext } from '@/lib/authoritative-asset-context';\nimport { verifySignedAuthoritativeAssetContext } from '@/lib/authoritative-asset-context-token';", 1)
+          old = "    const authoritativeAssetContext = await resolveAuthoritativeAssetContext(symbol);"
+          new = "    const signedContextToken = req.headers.get('x-authoritative-asset-context')?.trim();\n    const authoritativeAssetContext = signedContextToken\n      ? verifySignedAuthoritativeAssetContext(signedContextToken, symbol)\n      : await resolveAuthoritativeAssetContext(symbol);"
+          if old in q and 'signedContextToken' not in q:
+              q = q.replace(old, new, 1)
+          route.write_text(q)
+
+          test = Path('scripts/tests/live-signal-no-cache-invariants.mjs')
+          t = test.read_text()
+          if "const assetContext = read('lib/authoritative-asset-context.ts');" not in t:
+              t = t.replace("const durationRegistry = read('lib/deriv-duration-registry.ts');", "const durationRegistry = read('lib/deriv-duration-registry.ts');\nconst assetContext = read('lib/authoritative-asset-context.ts');\nconst assetContextToken = read('lib/authoritative-asset-context-token.ts');")
+          t = t.replace("if (!ranking.includes('LIVE_RANKING_MAX_CONCURRENCY')) {", "if (ranking.split('getLiveRiseFallSymbols(').length - 1 !== 1) {\n  throw new Error('Live signal authority invariant failed: ranking performs more than one live symbol-discovery call.');\n}\nif (!ranking.includes('signedContextBySymbol')) {\n  throw new Error('Live signal authority invariant failed: ranking does not create request-scoped signed asset context.');\n}\nif (!ranking.includes(\"'x-authoritative-asset-context'\")) {\n  throw new Error('Live signal authority invariant failed: signed asset context is not attached to internal prediction requests.');\n}\nif (!predictionRoute.includes('verifySignedAuthoritativeAssetContext')) {\n  throw new Error('Live signal authority invariant failed: prediction route does not verify signed internal asset context.');\n}\nif (!assetContext.includes('resolveAuthoritativeAssetContextFromDiscovered')) {\n  throw new Error('Live signal authority invariant failed: request-scoped discovered universe resolver is missing.');\n}\nif (!assetContextToken.includes('timingSafeEqual') || !assetContextToken.includes('MAX_CONTEXT_AGE_MS')) {\n  throw new Error('Live signal authority invariant failed: signed context verification is missing freshness/integrity checks.');\n}\nif (!ranking.includes('LIVE_RANKING_MAX_CONCURRENCY')) {")
+          test.write_text(t)
+
+          PY
+
+      - name: Verify targeted changes
+        run: |
+          node scripts/tests/live-signal-no-cache-invariants.mjs
+          npm run typecheck
+          npm run build
+
+      - name: Review diff and remove temporary workflow
+        run: |
+          git diff --check
+          git diff -- lib/authoritative-asset-context.ts lib/authoritative-asset-context-token.ts lib/live-market-ranking.ts app/api/signals/predict/route.ts scripts/tests/live-signal-no-cache-invariants.mjs
+          git status --short
+          git rm .github/workflows/temporary-live-context-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/authoritative-asset-context.ts lib/authoritative-asset-context-token.ts lib/live-market-ranking.ts app/api/signals/predict/route.ts scripts/tests/live-signal-no-cache-invariants.mjs
+          git diff --cached --check
+          git commit -m 'fix(signals): reuse request-scoped authoritative asset context'
+          git push origin HEAD:${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}
