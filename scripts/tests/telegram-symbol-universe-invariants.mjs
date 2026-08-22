@@ -10,6 +10,9 @@ assert.equal(controller.includes('const SYMBOL_NAMES:'), false, 'Telegram displa
 assert.ok(controller.includes('getLiveRiseFallSymbols'), 'Telegram must consume the authoritative symbol discovery layer');
 assert.ok(controller.includes('getAuthoritativeTelegramSymbols'), 'Telegram must resolve its market universe centrally');
 assert.ok(controller.includes('getLiveRiseFallSymbols(true, false)'), 'Telegram discovery must force a fresh, non-fallback market lookup');
-assert.ok(discovery.includes('allowCachedOnError'), 'Symbol discovery must expose explicit stale-cache policy');
-assert.ok(discovery.includes('if (allowCachedOnError && cachedSymbols'), 'Stale cache must be opt-in');
+assert.ok(discovery.includes('Dynamically discover active Deriv instruments on every invocation.'), 'Symbol discovery must explicitly be live per invocation');
+assert.equal(discovery.includes('cachedSymbols'), false, 'Symbol discovery must not retain cached symbol state');
+assert.equal(discovery.includes('cacheExpiresAt'), false, 'Symbol discovery must not retain a cache expiry');
+assert.equal(discovery.includes('inFlightDiscovery'), false, 'Symbol discovery must not reuse an in-flight result as a cache/coalesced result');
+assert.equal(discovery.includes('allowCachedOnError'), false, 'Symbol discovery must not expose a stale-cache fallback policy');
 console.log('Telegram symbol-universe invariants: PASSED');
