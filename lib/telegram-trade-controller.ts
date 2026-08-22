@@ -9,6 +9,8 @@ import {
   claimTelegramTradeIntent,
   decryptSecret,
   ensureTelegramSchema,
+  getTelegramTradeSessionLeaseMinutes,
+  touchTelegramTradeIntent,
   updateTelegramTradeIntent,
 } from './telegram-db';
 
@@ -1106,13 +1108,17 @@ export class TelegramBotController {
       return;
     }
 
-    const claimed = await claimTelegramTradeIntent(sql, idempotencyKey, chatId);
-    if (!claimed) {
+    const claim = await claimTelegramTradeIntent(sql, idempotencyKey, chatId);
+    if (!claim.claimed) {
+      const message = claim.reason === 'active'
+        ? 'ℹ️ A trade session is already active for your account.'
+        : 'ℹ️ This Telegram trade request was already processed or is still in progress.';
+
       await this.sendOrEditScreen({
         chatId,
         messageId,
         screenKey: 'trade_error',
-        text: 'ℹ️ This Telegram trade request was already processed or is still in progress.',
+        text: message,
         replyMarkup: { inline_keyboard: [[{ text: '🏠 Main Menu', callback_data: 'nav_main_menu' }]] },
       });
       return;
@@ -1150,6 +1156,7 @@ export class TelegramBotController {
     try {
       initialSignal = await this.requestLiveSignal(user, symbol);
     } catch (err) {
+      await updateTelegramTradeIntent(sql, idempotencyKey, 'failed');
       const code = err instanceof Error ? err.message : 'AI_SIGNAL_UNAVAILABLE';
       await this.sendOrEditScreen({
         chatId,
@@ -1162,6 +1169,23 @@ export class TelegramBotController {
         },
       });
       return;
+    }
+
+    const leaseMinutes = getTelegramTradeSessionLeaseMinutes();
+    const heartbeatIntervalMs = Math.max(
+      10_000,
+      Math.floor((leaseMinutes * 60_000) / 3)
+    );
+    const heartbeatTimer = setInterval(() => {
+      void touchTelegramTradeIntent(sql, idempotencyKey).catch((err) => {
+        console.warn(
+          '[Telegram Trade Intent Heartbeat Failure]:',
+          err instanceof Error ? err.message : 'unknown'
+        );
+      });
+    }, heartbeatIntervalMs);
+    if (typeof heartbeatTimer === 'object' && 'unref' in heartbeatTimer) {
+      (heartbeatTimer as any).unref?.();
     }
 
     const dirLabel = initialSignal.prediction.signal === 'CALL' ? 'Buy ↗️' : 'Sell ↘️';
@@ -1273,7 +1297,7 @@ export class TelegramBotController {
             }
           }
           
-          const pendingLine = `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD -> Pending... (${contractType} ${selectedHorizon.value}${selectedHorizon.unit})`;
+          const pendingLine = `⚡ Sequence ${tradeIdx} of ${maxTrades} | Recovery Step ${step} of ${maxSteps} | ${currentStake.toFixed(2)} USD -> Pending... (${contractType} ${selectedHorizon.value}${selectedHorizon.unit})`;
           await this.sendOrEditScreen({
             chatId,
             messageId,
@@ -1282,7 +1306,7 @@ export class TelegramBotController {
             parseMode: 'Markdown',
             replyMarkup: {
               inline_keyboard: [
-                [{ text: `⚡ Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD ${stepBadge} -> Pending...`, callback_data: 'noop' }]
+                [{ text: `⚡ Sequence ${tradeIdx} of ${maxTrades} | Recovery Step ${step} of ${maxSteps} | ${currentStake.toFixed(2)} USD ${stepBadge} -> Pending...`, callback_data: 'noop' }]
               ]
             }
           });
@@ -1355,11 +1379,11 @@ export class TelegramBotController {
 
           const icon = settlement.is_won ? '🟢' : settlement.is_settled ? '🔴' : '⚠️';
           const resultStr = settlement.is_won ? `+$${profit.toFixed(2)} USD` : `-$${Math.abs(profit).toFixed(2)} USD`;
-          sessionLedger += `${icon} Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD (${contractType}) -> ${resultStr}\n`;
+          sessionLedger += `${icon} Sequence ${tradeIdx} of ${maxTrades} | Recovery Step ${step} of ${maxSteps} | ${currentStake.toFixed(2)} USD (${contractType}) -> ${resultStr}\n`;
 
           const stepStatusBtn = settlement.is_won
-            ? `🟢 Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD (${contractType}) -> +$${profit.toFixed(2)} USD`
-            : `🔴 Trade ${tradeIdx} | Step ${step} | ${currentStake.toFixed(2)} USD (${contractType}) -> -$${Math.abs(profit).toFixed(2)} USD`;
+            ? `🟢 Sequence ${tradeIdx} of ${maxTrades} | Recovery Step ${step} of ${maxSteps} | ${currentStake.toFixed(2)} USD (${contractType}) -> +$${profit.toFixed(2)} USD`
+            : `🔴 Sequence ${tradeIdx} of ${maxTrades} | Recovery Step ${step} of ${maxSteps} | ${currentStake.toFixed(2)} USD (${contractType}) -> -$${Math.abs(profit).toFixed(2)} USD`;
 
           await this.sendOrEditScreen({
             chatId,
@@ -1465,6 +1489,7 @@ export class TelegramBotController {
         },
       });
     } finally {
+      clearInterval(heartbeatTimer);
       client.close();
     }
   }
@@ -1746,7 +1771,7 @@ export class TelegramBotController {
       screenKey: 'settings',
       text:
         `📈 *ADJUST MAX TRADES*\n` +
-        `_Configure the maximum overall concurrent active trades allowed._\n\n` +
+        `_Configure the maximum base trade sequences executed within one automated session._\n\n` +
         `📈 *Current Max Trades:* \`${user.max_trades}\``,
       parseMode: 'Markdown',
       replyMarkup: {

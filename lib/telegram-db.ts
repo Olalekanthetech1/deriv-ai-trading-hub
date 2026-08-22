@@ -171,6 +171,19 @@ export function decryptSecret(cipherPayload: string): string | null {
   }
 }
 
+export type TelegramTradeIntentClaimResult = {
+  claimed: boolean;
+  reason: 'claimed' | 'duplicate' | 'active';
+};
+
+const DEFAULT_TELEGRAM_TRADE_SESSION_LEASE_MINUTES = 15;
+
+export function getTelegramTradeSessionLeaseMinutes(): number {
+  const configured = Number(process.env.TELEGRAM_TRADE_SESSION_LEASE_MINUTES);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return DEFAULT_TELEGRAM_TRADE_SESSION_LEASE_MINUTES;
+}
+
 export async function claimTelegramUpdate(sql: any, updateId: number): Promise<boolean> {
   const rows = await sql`
     INSERT INTO telegram_update_events (update_id)
@@ -185,14 +198,94 @@ export async function claimTelegramTradeIntent(
   sql: any,
   idempotencyKey: string,
   chatId: number
-): Promise<boolean> {
-  const rows = await sql`
-    INSERT INTO telegram_trade_intents (idempotency_key, chat_id, status)
-    VALUES (${idempotencyKey}, ${chatId}, 'processing')
-    ON CONFLICT (idempotency_key) DO NOTHING
-    RETURNING idempotency_key
+): Promise<TelegramTradeIntentClaimResult> {
+  const leaseMinutes = getTelegramTradeSessionLeaseMinutes();
+  const lockKey = `telegram-trade-session:${chatId}`;
+
+  const [
+    ,
+    ,
+    activeBeforeInsert,
+    duplicateBeforeInsert,
+    inserted,
+    duplicateAfterInsert,
+  ] = await sql.transaction([
+    sql`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${lockKey}, 0)
+      )
+    `,
+    sql`
+      UPDATE telegram_trade_intents
+      SET status = 'failed',
+          updated_at = NOW()
+      WHERE chat_id = ${chatId}
+        AND status = 'processing'
+        AND updated_at < NOW() - (${leaseMinutes} * INTERVAL '1 minute')
+    `,
+    sql`
+      SELECT 1
+      FROM telegram_trade_intents
+      WHERE chat_id = ${chatId}
+        AND status = 'processing'
+      LIMIT 1
+    `,
+    sql`
+      SELECT 1
+      FROM telegram_trade_intents
+      WHERE idempotency_key = ${idempotencyKey}
+      LIMIT 1
+    `,
+    sql`
+      INSERT INTO telegram_trade_intents (idempotency_key, chat_id, status)
+      SELECT ${idempotencyKey}, ${chatId}, 'processing'
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM telegram_trade_intents
+        WHERE chat_id = ${chatId}
+          AND status = 'processing'
+      )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM telegram_trade_intents
+          WHERE idempotency_key = ${idempotencyKey}
+        )
+      ON CONFLICT DO NOTHING
+      RETURNING idempotency_key
+    `,
+    sql`
+      SELECT 1
+      FROM telegram_trade_intents
+      WHERE idempotency_key = ${idempotencyKey}
+      LIMIT 1
+    `,
+  ]);
+
+  if (inserted.length > 0) {
+    return { claimed: true, reason: 'claimed' };
+  }
+
+  if (duplicateBeforeInsert.length > 0 || duplicateAfterInsert.length > 0) {
+    return { claimed: false, reason: 'duplicate' };
+  }
+
+  if (activeBeforeInsert.length > 0) {
+    return { claimed: false, reason: 'active' };
+  }
+
+  return { claimed: false, reason: 'active' };
+}
+
+export async function touchTelegramTradeIntent(
+  sql: any,
+  idempotencyKey: string
+): Promise<void> {
+  await sql`
+    UPDATE telegram_trade_intents
+    SET updated_at = NOW()
+    WHERE idempotency_key = ${idempotencyKey}
+      AND status = 'processing'
   `;
-  return rows.length > 0;
 }
 
 export async function updateTelegramTradeIntent(

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { after, NextRequest, NextResponse } from 'next/server';
 import { neon } from '@neondatabase/serverless';
 import { TelegramBotController, getSymbolDisplayName } from '@/lib/telegram-trade-controller';
 import { claimTelegramUpdate, ensureTelegramSchema } from '@/lib/telegram-db';
@@ -60,12 +60,26 @@ export async function POST(req: NextRequest) {
         if (Number.isFinite(amount) && amount > 0) {
           await bot.updateUser(chatId, { support_state: 'idle', active_stake: amount });
           if (bannerMessageId && Number.isSafeInteger(bannerMessageId)) {
-            await bot.executeTrade(chatId, bannerMessageId, symbol, amount, msg.message_id.toString());
+            after(() =>
+              bot.executeTrade(chatId, bannerMessageId, symbol, amount, msg.message_id.toString()).catch((err) => {
+                console.error(
+                  '[Telegram Trade Background Execution Error]:',
+                  err instanceof Error ? err.message : 'unknown'
+                );
+              })
+            );
           } else {
             const response = await bot.sendMessage(chatId, `⚙️ Initializing trade execution for ${getSymbolDisplayName(symbol)}...`);
             const botMessageId = response?.result?.message_id;
             if (botMessageId) {
-              await bot.executeTrade(chatId, botMessageId, symbol, amount, msg.message_id.toString());
+              after(() =>
+                bot.executeTrade(chatId, botMessageId, symbol, amount, msg.message_id.toString()).catch((err) => {
+                  console.error(
+                    '[Telegram Trade Background Execution Error]:',
+                    err instanceof Error ? err.message : 'unknown'
+                  );
+                })
+              );
             }
           }
         } else {
@@ -172,7 +186,14 @@ export async function POST(req: NextRequest) {
         }
         const symbol = raw.slice(0, separator);
         const stake = Number(raw.slice(separator + 1));
-        await bot.executeTrade(chatId, messageId, symbol, stake, cb.id);
+        after(() =>
+          bot.executeTrade(chatId, messageId, symbol, stake, cb.id).catch((err) => {
+            console.error(
+              '[Telegram Trade Background Execution Error]:',
+              err instanceof Error ? err.message : 'unknown'
+            );
+          })
+        );
       } else if (data === 'menu_deposit') {
         await bot.renderDepositScreen(chatId, messageId);
       } else if (data === 'menu_withdrawal') {
