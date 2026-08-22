@@ -17,7 +17,6 @@ const PROBE_SEEDS: Record<DerivDurationUnit, number[]> = {
   h: [1, 2, 4, 6, 12, 24],
   d: [1, 2, 3, 5, 7, 14, 30, 60, 90, 180, 365],
 };
-const DISCOVERY_TTL_MS = 10 * 60 * 1000;
 const configuredProbeInterval = Number(process.env.DERIV_DISCOVERY_PROBE_INTERVAL_MS);
 const PROBE_INTERVAL_MS = Number.isFinite(configuredProbeInterval)
   ? Math.min(2000, Math.max(200, Math.floor(configuredProbeInterval)))
@@ -32,8 +31,6 @@ const RISE_FALL_TYPES = new Set(['CALL', 'PUT']);
 // used by this application. Day durations remain valid at the broker API level but
 // are not exposed by this training-data selector.
 const TRAINING_DURATION_UNITS: DerivDurationUnit[] = ['t', 's', 'm', 'h'];
-const cache = new Map<string, { value: DerivDurationDiscovery; expiresAt: number }>();
-const inFlight = new Map<string, Promise<DerivDurationDiscovery>>();
 
 function asRecord(value: unknown): RecordLike | null { return value && typeof value === 'object' && !Array.isArray(value) ? value as RecordLike : null; }
 function sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -234,25 +231,19 @@ async function discover(symbol: string): Promise<DerivDurationDiscovery> {
 export async function getDerivDurationDiscovery(symbol: string): Promise<DerivDurationDiscovery> {
   const normalized = String(symbol ?? '').trim().toUpperCase();
   if (!normalized) throw new Error('A Deriv symbol is required for duration discovery.');
-  const cached = cache.get(normalized);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const existing = inFlight.get(normalized);
-  if (existing) return existing;
-  const promise = discover(normalized)
-    .then(value => { cache.set(normalized, { value, expiresAt: Date.now() + DISCOVERY_TTL_MS }); return value; })
-    .catch(error => {
-      if (!isUnsupportedRiseFallSymbol(error)) throw error;
-      return {
-        symbol: normalized,
-        ranges: [],
-        fetchedAt: new Date().toISOString(),
-        source: 'deriv-proposal-probe' as const,
-        warning: error instanceof Error ? error.message : String(error),
-      };
-    })
-    .finally(() => { inFlight.delete(normalized); });
-  inFlight.set(normalized, promise);
-  return promise;
+
+  try {
+    return await discover(normalized);
+  } catch (error) {
+    if (!isUnsupportedRiseFallSymbol(error)) throw error;
+    return {
+      symbol: normalized,
+      ranges: [],
+      fetchedAt: new Date().toISOString(),
+      source: 'deriv-proposal-probe' as const,
+      warning: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export function durationToSeconds(value: number, unit: DerivDurationUnit): number | null {
