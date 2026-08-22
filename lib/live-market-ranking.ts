@@ -32,6 +32,36 @@ function getInternalBaseUrl(): string {
   return `http://127.0.0.1:${process.env.PORT || '3000'}`;
 }
 
+function getLiveRankingConcurrency(): number {
+  const configured = Number(process.env.LIVE_RANKING_MAX_CONCURRENCY);
+  if (Number.isSafeInteger(configured) && configured > 0) return Math.min(8, Math.max(1, configured));
+  return 4;
+}
+
+async function settleWithConcurrency<T>(
+  items: readonly RiseFallSymbolMetadata[],
+  worker: (item: RiseFallSymbolMetadata) => Promise<T>,
+): Promise<PromiseSettledResult<T>[]> {
+  const results = new Array<PromiseSettledResult<T>>(items.length);
+  let cursor = 0;
+  const concurrency = Math.min(getLiveRankingConcurrency(), items.length);
+
+  const run = async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      try {
+        results[index] = { status: 'fulfilled', value: await worker(items[index]) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => run()));
+  return results;
+}
+
 function isValidConfidence(value: unknown): value is number {
   const confidence = Number(value);
   return Number.isFinite(confidence) && confidence >= 0 && confidence <= 100;
@@ -80,56 +110,54 @@ export async function refreshLiveMarketRankings(
   if (onProgress) await onProgress('ai_analysis');
 
   const baseUrl = getInternalBaseUrl();
-  const settled = await Promise.allSettled(
-    eligible.map(async (metadata) => {
-      const correlationId = randomUUID();
-      const response = await fetch(`${baseUrl}/api/signals/predict`, {
-        method: 'POST',
-        cache: 'no-store',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store, no-cache, max-age=0',
-          Pragma: 'no-cache',
-          'x-correlation-id': correlationId,
-          'x-live-signal-request': 'true',
-        },
-        body: JSON.stringify({
-          symbol: metadata.symbol,
-          durationValue: 5,
-          durationUnit: 't',
-          isAutoDuration: true,
-          mode: 'auto',
-          autoHorizonMode: 'auto',
-          allowedHorizons: TELEGRAM_SUPPORTED_HORIZONS,
-        }),
-      });
-
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !isValidPrediction(data, metadata.symbol)) {
-        throw new Error(`LIVE_SIGNAL_UNAVAILABLE:${metadata.symbol}`);
-      }
-
-      const confidence = Number(data.prediction.confidence);
-      const modelVersion = String(data.prediction.modelVersion).trim();
-      const executionPlanId = String(data.executionPlan.executionPlanId).trim();
-      const signal = data.prediction.signal as 'CALL' | 'PUT';
-      const predictionTimestamp = Number(data.prediction.timestamp);
-
-      return {
+  const settled = await settleWithConcurrency(eligible, async (metadata) => {
+    const correlationId = randomUUID();
+    const response = await fetch(`${baseUrl}/api/signals/predict`, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store, no-cache, max-age=0',
+        Pragma: 'no-cache',
+        'x-correlation-id': correlationId,
+        'x-live-signal-request': 'true',
+      },
+      body: JSON.stringify({
         symbol: metadata.symbol,
-        name: metadata.displayName,
-        // Existing Telegram rendering expects this field. It is the live native
-        // model confidence; it is not a historical empirical win-rate statistic.
-        winRate: Math.round(confidence),
-        signal,
-        confidence,
-        modelVersion,
-        executionPlanId,
-        horizonLabel: String(data.executionPlan.selectedHorizon.label),
-        predictionTimestamp,
-      } satisfies RankedAssetItem;
-    }),
-  );
+        durationValue: 5,
+        durationUnit: 't',
+        isAutoDuration: true,
+        mode: 'auto',
+        autoHorizonMode: 'auto',
+        allowedHorizons: TELEGRAM_SUPPORTED_HORIZONS,
+      }),
+    });
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !isValidPrediction(data, metadata.symbol)) {
+      throw new Error(`LIVE_SIGNAL_UNAVAILABLE:${metadata.symbol}`);
+    }
+
+    const confidence = Number(data.prediction.confidence);
+    const modelVersion = String(data.prediction.modelVersion).trim();
+    const executionPlanId = String(data.executionPlan.executionPlanId).trim();
+    const signal = data.prediction.signal as 'CALL' | 'PUT';
+    const predictionTimestamp = Number(data.prediction.timestamp);
+
+    return {
+      symbol: metadata.symbol,
+      name: metadata.displayName,
+      // Existing Telegram rendering expects this field. It is the live native
+      // model confidence; it is not a historical empirical win-rate statistic.
+      winRate: Math.round(confidence),
+      signal,
+      confidence,
+      modelVersion,
+      executionPlanId,
+      horizonLabel: String(data.executionPlan.selectedHorizon.label),
+      predictionTimestamp,
+    } satisfies RankedAssetItem;
+  });
 
   const rankings = settled
     .filter((result): result is PromiseFulfilledResult<RankedAssetItem> => result.status === 'fulfilled')
