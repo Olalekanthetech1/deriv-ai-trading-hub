@@ -12,6 +12,7 @@ export interface RankedAssetItem {
   modelVersion: string;
   executionPlanId: string;
   horizonLabel: string;
+  predictionTimestamp: number;
 }
 
 export interface LiveMarketRankingSnapshot {
@@ -22,7 +23,7 @@ export interface LiveMarketRankingSnapshot {
   dataAgeMs: number;
   validationStatus: 'VALIDATED' | 'DEGRADED' | 'EXPIRED';
   modelVersion: string;
-  featureSchemaVersion: string;
+  featureSchemaVersion?: string;
 }
 
 function getInternalBaseUrl(): string {
@@ -36,6 +37,11 @@ function isValidConfidence(value: unknown): value is number {
   return Number.isFinite(confidence) && confidence >= 0 && confidence <= 100;
 }
 
+function isValidTimestamp(value: unknown): value is number {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) && timestamp > 0;
+}
+
 function isValidPrediction(data: any, expectedSymbol: string): boolean {
   if (data?.success !== true || !data.prediction || !data.executionPlan) return false;
   if (String(data.prediction.symbol || '').toUpperCase() !== expectedSymbol) return false;
@@ -43,8 +49,9 @@ function isValidPrediction(data: any, expectedSymbol: string): boolean {
   if (!isValidConfidence(data.prediction.confidence)) return false;
   if (!String(data.prediction.modelVersion || '').trim()) return false;
   if (!String(data.executionPlan.executionPlanId || '').trim()) return false;
-  if (data.executionPlan.horizonAligned !== true || data.executionPlan.strategyGateAccepted !== true) return false;
+  if (!data.executionPlan.horizonAligned || data.executionPlan.strategyGateAccepted !== true) return false;
   if (!data.executionPlan.selectedHorizon?.label) return false;
+  if (!isValidTimestamp(data.prediction.timestamp)) return false;
   return true;
 }
 
@@ -58,8 +65,6 @@ function isValidPrediction(data: any, expectedSymbol: string): boolean {
 export async function refreshLiveMarketRankings(
   onProgress?: (stage: 'data_stream' | 'ai_analysis' | 'target_locked') => Promise<void> | void,
 ): Promise<LiveMarketRankingSnapshot> {
-  const startedAt = Date.now();
-
   const discovered: RiseFallSymbolMetadata[] = await getLiveRiseFallSymbols(true, false);
   const governanceConfig = await getTelegramAssetGovernanceConfig();
   const eligible = discovered.filter(
@@ -108,18 +113,20 @@ export async function refreshLiveMarketRankings(
       const modelVersion = String(data.prediction.modelVersion).trim();
       const executionPlanId = String(data.executionPlan.executionPlanId).trim();
       const signal = data.prediction.signal as 'CALL' | 'PUT';
+      const predictionTimestamp = Number(data.prediction.timestamp);
 
       return {
         symbol: metadata.symbol,
         name: metadata.displayName,
-        // Retained for the existing Telegram rendering contract. This value is
-        // the live native model confidence, not a historical empirical win rate.
+        // Existing Telegram rendering expects this field. It is the live native
+        // model confidence; it is not a historical empirical win-rate statistic.
         winRate: Math.round(confidence),
         signal,
         confidence,
         modelVersion,
         executionPlanId,
         horizonLabel: String(data.executionPlan.selectedHorizon.label),
+        predictionTimestamp,
       } satisfies RankedAssetItem;
     }),
   );
@@ -132,15 +139,19 @@ export async function refreshLiveMarketRankings(
   if (!rankings.length) throw new Error('MARKET_RANKINGS_INFERENCE_UNAVAILABLE');
   if (onProgress) await onProgress('target_locked');
 
-  const generatedAt = new Date().toISOString();
+  // Report the age of the oldest included live prediction so the freshness
+  // indicator cannot overstate freshness when one asset responded later.
+  const oldestPredictionTimestamp = Math.min(...rankings.map((item) => item.predictionTimestamp));
+  const now = Date.now();
+  const generatedAt = new Date(now).toISOString();
+
   return {
     generatedAt,
-    tickTimestamp: Date.now(),
+    tickTimestamp: oldestPredictionTimestamp,
     candidateCount: rankings.length,
     rankings,
-    dataAgeMs: Date.now() - startedAt,
+    dataAgeMs: Math.max(0, now - oldestPredictionTimestamp),
     validationStatus: 'VALIDATED',
     modelVersion: rankings[0].modelVersion,
-    featureSchemaVersion: 'v2-microstructure',
   };
 }
